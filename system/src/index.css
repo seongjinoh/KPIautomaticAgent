@@ -1,0 +1,25 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: 'Noto Sans KR', sans-serif;
+  --color-navy-50: #e8edf4;
+  --color-navy-100: #c5d0e3;
+  --color-navy-200: #9eb1cf;
+  --color-navy-300: #7791bb;
+  --color-navy-400: #5979ac;
+  --color-navy-500: #3b619d;
+  --color-navy-600: #355895;
+  --color-navy-700: #2d4d8b;
+  --color-navy-800: #264381;
+  --color-navy-900: #19316f;
+  --color-navy-950: #0f1f4a;
+}
+
+body {
+  font-family: 'Noto Sans KR', sans-serif;
+  background-color: #f1f5f9;
+}
+
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
