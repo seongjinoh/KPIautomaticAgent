@@ -1118,26 +1118,35 @@ export default function EvalConfigView({
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-3">
         <div className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2">
-          {yearOptions.length ? (
-            <select
-              value={selectedYear ?? ''}
-              onChange={e => onYearChange(Number(e.target.value))}
-              className="text-sm font-semibold bg-transparent outline-none cursor-pointer text-slate-800"
-            >
-              {yearOptions.map(y => (
-                <option key={y} value={y}>{y}년</option>
-              ))}
-            </select>
-          ) : (
-            <input
-              type="number"
-              value={selectedYear ?? ''}
-              onChange={e => onYearChange(Number(e.target.value))}
-              placeholder="연도"
-              className="w-24 text-sm font-semibold bg-transparent outline-none text-slate-800"
-              title="평가배치가 없어 연도를 직접 입력합니다"
-            />
-          )}
+          <select
+            value={selectedYear ?? ''}
+            onChange={e => onYearChange(Number(e.target.value))}
+            className="text-sm font-semibold bg-transparent outline-none cursor-pointer text-slate-800"
+          >
+            {(yearOptions.length ? yearOptions : [selectedYear].filter(Boolean)).map(y => (
+              <option key={y} value={y}>{y}년</option>
+            ))}
+          </select>
+          <button
+            type="button"
+            title="아직 평가셋이 없는 연도를 추가해 배치를 만듭니다"
+            onClick={() => {
+              const hint = (Math.max(0, ...yearOptions.map(Number), Number(selectedYear) || 0) || new Date().getFullYear()) + 1
+              const raw = window.prompt('추가할 평가 연도 (예: 2027)', String(hint))
+              if (raw == null) return
+              const y = Number(String(raw).trim())
+              if (!Number.isFinite(y) || y < 2000 || y > 2100) {
+                setError('연도는 2000~2100 사이 숫자로 입력하세요.')
+                return
+              }
+              onYearChange(y)
+              setFeedback(`${y}년으로 전환했습니다. 「기본값 생성」 또는 「수정 시작 → 적용월 저장」으로 평가셋을 만드세요.`)
+              setError('')
+            }}
+            className="text-xs font-semibold text-emerald-700 hover:text-emerald-800 whitespace-nowrap"
+          >
+            연도 추가
+          </button>
         </div>
         <select value={selectedMonth} onChange={e => onMonthChange(Number(e.target.value))} className="text-sm border border-slate-200 rounded-lg px-3 py-2 bg-white">
           {Array.from({ length: 12 }, (_, i) => i + 1).map(m => <option key={m} value={m}>{m}월</option>)}

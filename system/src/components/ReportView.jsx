@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
 import { FileText, Settings, Play, Loader2, Copy, Check, RotateCcw, ChevronDown, ChevronUp, Save } from 'lucide-react'
-import { loadSettings, saveSettings, callLLM, PROVIDER_OPTIONS } from '../lib/llmService'
+import { loadSettings, saveSettings, callLLM, PROVIDER_OPTIONS, hasEnvApiKey } from '../lib/llmService'
 import { buildReportPrompt } from '../lib/reportPrompt'
 import MarkdownRenderer from './MarkdownRenderer'
 
@@ -38,6 +38,10 @@ export default function ReportView({ group, categories, definitions, results, se
   const [copied, setCopied] = useState(false)
   const [showPrompt, setShowPrompt] = useState(true)
   const [settings, setSettings] = useState(loadSettings)
+
+  useEffect(() => {
+    setSettings(loadSettings())
+  }, [])
   const [systemEdit, setSystemEdit] = useState('')
   const [userEdit, setUserEdit] = useState('')
   const [promptDirty, setPromptDirty] = useState(false)
@@ -85,9 +89,11 @@ export default function ReportView({ group, categories, definitions, results, se
   }), [systemEdit, userEdit, builtPrompt])
 
   const handleGenerate = useCallback(async () => {
-    if (!settings.apiKey) {
+    const current = loadSettings()
+    setSettings(current)
+    if (!current.apiKey) {
       setShowSettings(true)
-      setError('API Key를 먼저 설정해 주세요.')
+      setError('API Key가 없습니다. system/.env에 VITE_GEMINI_API_KEY를 넣고 npm run dev를 재시작하거나, 설정에서 직접 입력하세요.')
       return
     }
     setLoading(true)
@@ -100,7 +106,7 @@ export default function ReportView({ group, categories, definitions, results, se
     } finally {
       setLoading(false)
     }
-  }, [activePrompt, settings.apiKey])
+  }, [activePrompt])
 
   const handleCopy = () => {
     navigator.clipboard.writeText(report)
@@ -137,8 +143,8 @@ export default function ReportView({ group, categories, definitions, results, se
   }
 
   const handleSaveSettings = (newSettings) => {
-    setSettings(newSettings)
     saveSettings(newSettings)
+    setSettings(loadSettings())
     setShowSettings(false)
     setError('')
   }
@@ -326,7 +332,7 @@ export default function ReportView({ group, categories, definitions, results, se
           </p>
           <div className="flex items-center justify-center gap-3">
             <button
-              onClick={() => { if (!settings.apiKey) setShowSettings(true); else handleGenerate() }}
+              onClick={() => { const c = loadSettings(); setSettings(c); if (!c.apiKey) setShowSettings(true); else handleGenerate() }}
               className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-violet-600 text-white text-sm font-medium hover:bg-violet-700 transition-colors"
             >
               <Play className="w-4 h-4" />
@@ -340,12 +346,18 @@ export default function ReportView({ group, categories, definitions, results, se
 }
 
 function SettingsPanel({ settings, onSave, onClose }) {
-  const [local, setLocal] = useState({ ...settings })
+  const [local, setLocal] = useState({ ...loadSettings() })
   const provider = PROVIDER_OPTIONS.find(p => p.id === local.provider) || PROVIDER_OPTIONS[0]
+  const fromEnv = hasEnvApiKey() || settings.source === 'env'
 
   return (
     <div className="bg-white rounded-xl border border-violet-200 p-5">
       <h4 className="text-sm font-bold text-slate-700 mb-4">LLM API 설정</h4>
+      {fromEnv && (
+        <p className="mb-4 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800">
+          API Key는 <code className="font-mono">system/.env</code>의 <code className="font-mono">VITE_GEMINI_API_KEY</code>에서 자동 로드됩니다. (변경 후 dev 서버 재시작)
+        </p>
+      )}
       <div className="grid grid-cols-2 gap-4">
         <div>
           <label className="block text-xs font-medium text-slate-500 mb-1">Provider</label>
@@ -378,13 +390,19 @@ function SettingsPanel({ settings, onSave, onClose }) {
         </div>
         <div className="col-span-2">
           <label className="block text-xs font-medium text-slate-500 mb-1">API Key</label>
-          <input
-            type="password"
-            value={local.apiKey}
-            onChange={e => setLocal(s => ({ ...s, apiKey: e.target.value }))}
-            placeholder={local.provider === 'gemini' ? 'Google AI Studio API Key' : 'sk-...'}
-            className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm outline-none focus:border-violet-400"
-          />
+          {fromEnv ? (
+            <div className="w-full px-3 py-2 rounded-lg border border-emerald-200 bg-emerald-50 text-sm text-emerald-800">
+              .env에서 로드됨 (••••••••)
+            </div>
+          ) : (
+            <input
+              type="password"
+              value={local.apiKey || ''}
+              onChange={e => setLocal(s => ({ ...s, apiKey: e.target.value }))}
+              placeholder={local.provider === 'gemini' ? 'Google AI Studio API Key' : 'sk-...'}
+              className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm outline-none focus:border-violet-400"
+            />
+          )}
         </div>
         {local.provider === 'custom' && (
           <div className="col-span-2">
@@ -400,7 +418,18 @@ function SettingsPanel({ settings, onSave, onClose }) {
       </div>
       <div className="flex justify-end gap-2 mt-4">
         <button onClick={onClose} className="px-3 py-1.5 rounded-lg text-sm text-slate-500 hover:bg-slate-100">취소</button>
-        <button onClick={() => onSave(local)} className="px-4 py-1.5 rounded-lg text-sm bg-violet-600 text-white hover:bg-violet-700">저장</button>
+        <button
+          onClick={() => onSave({
+            ...loadSettings(),
+            provider: local.provider,
+            model: local.model,
+            baseUrl: local.baseUrl || '',
+            apiKey: fromEnv ? loadSettings().apiKey : (local.apiKey || ''),
+          })}
+          className="px-4 py-1.5 rounded-lg text-sm bg-violet-600 text-white hover:bg-violet-700"
+        >
+          저장
+        </button>
       </div>
     </div>
   )

@@ -1012,7 +1012,7 @@ class Handler(BaseHTTPRequestHandler):
                 with get_connection() as conn:
                     cur = conn.execute(
                         """SELECT common_code, lv1_code, lv2_code, lv3_code, name,
-                                  unit, common_yn, use_yn,
+                                  unit, use_yn,
                                   definition_text, calc_logic_text, owner_group_code, dept,
                                   calc_cycle, calc_timing, data_source_kind, data_source
                            FROM indicator_common ORDER BY common_code"""
@@ -1678,7 +1678,6 @@ class Handler(BaseHTTPRequestHandler):
                 lv3 = str(body.get("lv3_code") or "").strip()
                 name = str(body.get("name") or "").strip()
                 unit = str(body.get("unit") or "").strip()
-                common_yn = str(body.get("common_yn") or "단독").strip()
                 defs = pick_lv3_definition_fields(body)
                 if not all([lv1, lv2, name]):
                     self.send_json({"error": "validation", "message": "lv1/lv2/name required"}, 400)
@@ -1703,7 +1702,7 @@ class Handler(BaseHTTPRequestHandler):
                                 data_source_kind, data_source)
                                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                             (
-                                common, lv1, lv2, lv3, name, unit, "", common_yn, body.get("use_yn") or "Y",
+                                common, lv1, lv2, lv3, name, unit, "", "단독", body.get("use_yn") or "Y",
                                 defs["definition_text"], defs["calc_logic_text"],
                                 defs["owner_group_code"], defs["dept"],
                                 defs["calc_cycle"], defs["calc_timing"],
@@ -1857,7 +1856,7 @@ class Handler(BaseHTTPRequestHandler):
                     defs = pick_lv3_definition_fields(body)
                     cur = conn.execute(
                         """UPDATE indicator_common
-                           SET name=?, unit=?, common_yn=?, use_yn=?,
+                           SET name=?, unit=?, use_yn=?,
                                definition_text=?, calc_logic_text=?, owner_group_code=?, dept=?,
                                calc_cycle=?, calc_timing=?,
                                data_source_kind=?, data_source=?
@@ -1865,7 +1864,6 @@ class Handler(BaseHTTPRequestHandler):
                         (
                             str(body.get("name") or "").strip(),
                             unit,
-                            body.get("common_yn") or "단독",
                             body.get("use_yn") or "Y",
                             defs["definition_text"], defs["calc_logic_text"],
                             defs["owner_group_code"], defs["dept"],

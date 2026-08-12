@@ -1,49 +1,94 @@
 /**
  * LLM API 호출 서비스
  * OpenAI, Google Gemini, OpenAI-호환 엔드포인트 지원
+ *
+ * API Key 우선순위: system/.env (VITE_GEMINI_API_KEY) > 화면/localStorage
+ * .env 변경 후에는 dev 서버 재시작 필요 (npm run dev)
  */
 
 const STORAGE_KEY = 'kpi_llm_settings'
+const DEFAULT_GEMINI_MODEL = 'gemini-2.5-flash-lite'
 
 function envSettings() {
   const env = import.meta.env || {}
+  const apiKey = String(env.VITE_GEMINI_API_KEY || env.VITE_LLM_API_KEY || '').trim()
+  const model = String(env.VITE_GEMINI_MODEL || env.VITE_LLM_MODEL || DEFAULT_GEMINI_MODEL).trim()
   return {
     provider: env.VITE_LLM_PROVIDER || 'gemini',
-    apiKey: env.VITE_GEMINI_API_KEY || env.VITE_LLM_API_KEY || '',
-    model: env.VITE_GEMINI_MODEL || env.VITE_LLM_MODEL || 'gemini-2.0-flash',
-    baseUrl: env.VITE_LLM_BASE_URL || '',
-    source: env.VITE_GEMINI_API_KEY || env.VITE_LLM_API_KEY ? 'env' : 'manual',
+    apiKey,
+    model,
+    baseUrl: String(env.VITE_LLM_BASE_URL || '').trim(),
+    source: apiKey ? 'env' : 'manual',
   }
 }
 
+export function hasEnvApiKey() {
+  return Boolean(envSettings().apiKey)
+}
+
+export function hasEnvModel() {
+  return Boolean(String(import.meta.env?.VITE_GEMINI_MODEL || import.meta.env?.VITE_LLM_MODEL || '').trim())
+}
+
 export function loadSettings() {
-  const defaults = envSettings()
+  const env = envSettings()
+  let saved = null
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
-    if (raw) {
-      const saved = JSON.parse(raw)
-      const shouldUseEnvCredential = !saved.apiKey && defaults.apiKey
-      return {
-        ...defaults,
-        ...saved,
-        apiKey: shouldUseEnvCredential ? defaults.apiKey : (saved.apiKey || defaults.apiKey),
-        model: shouldUseEnvCredential ? defaults.model : (saved.model || defaults.model),
-        provider: shouldUseEnvCredential ? defaults.provider : (saved.provider || defaults.provider),
-        baseUrl: shouldUseEnvCredential ? defaults.baseUrl : (saved.baseUrl || defaults.baseUrl),
-        source: saved.apiKey ? 'manual' : defaults.source,
-      }
+    if (raw) saved = JSON.parse(raw)
+  } catch {
+    saved = null
+  }
+
+  // .env에 키/모델이 있으면 항상 env 우선 (localStorage의 옛 gemini-2.0-flash 등 무시)
+  if (env.apiKey) {
+    return {
+      provider: env.provider || saved?.provider || 'gemini',
+      apiKey: env.apiKey,
+      model: env.model,
+      baseUrl: env.baseUrl || saved?.baseUrl || '',
+      source: 'env',
     }
-  } catch {}
-  return defaults
+  }
+
+  if (saved) {
+    const deprecated = new Set(['gemini-2.0-flash', 'gemini-2.0-flash-lite'])
+    const savedModel = String(saved.model || '').trim()
+    const model = (savedModel && !deprecated.has(savedModel)) ? savedModel : env.model
+    return {
+      provider: saved.provider || env.provider,
+      apiKey: String(saved.apiKey || '').trim(),
+      model,
+      baseUrl: saved.baseUrl || env.baseUrl,
+      source: saved.apiKey ? 'manual' : 'manual',
+    }
+  }
+
+  return env
 }
 
 export function saveSettings(settings) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(settings))
+  const env = envSettings()
+  const payload = env.apiKey
+    ? {
+        provider: settings.provider,
+        model: env.model || settings.model,
+        baseUrl: settings.baseUrl || '',
+      }
+    : {
+        provider: settings.provider,
+        model: settings.model,
+        baseUrl: settings.baseUrl || '',
+        apiKey: settings.apiKey || '',
+      }
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(payload))
 }
 
 export async function callLLM({ systemPrompt, userPrompt }, onChunk) {
   const settings = loadSettings()
-  if (!settings.apiKey) throw new Error('API Key가 설정되지 않았습니다.')
+  if (!settings.apiKey) {
+    throw new Error('API Key가 설정되지 않았습니다. system/.env의 VITE_GEMINI_API_KEY를 넣고 dev 서버를 재시작하세요.')
+  }
 
   const call = () => settings.provider === 'gemini'
     ? callGemini(settings, systemPrompt, userPrompt, onChunk)
@@ -98,7 +143,7 @@ async function callOpenAI(settings, systemPrompt, userPrompt, onChunk) {
 }
 
 async function callGemini(settings, systemPrompt, userPrompt, onChunk) {
-  const model = settings.model || 'gemini-2.0-flash'
+  const model = settings.model || DEFAULT_GEMINI_MODEL
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${settings.apiKey}`
 
   const res = await fetch(url, {

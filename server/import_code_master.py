@@ -124,7 +124,6 @@ def import_workbook(xlsx_path: Path, conn=None) -> dict:
         lv3 = str(r.get("Lv3코드") or "").strip()
         name = str(r.get("Lv3지표") or "").strip()
         unit = str(r.get("단위") or r.get("예상단위") or "").strip()
-        common_yn = str(r.get("공통여부") or "단독").strip()
         definition_text = str(r.get("지표정의") or r.get("정의") or "").strip()
         calc_logic_text = str(r.get("산출로직") or "").strip()
         data_source = str(r.get("데이터원천") or r.get("원천") or r.get("원천상세") or "").strip()
@@ -163,7 +162,7 @@ def import_workbook(xlsx_path: Path, conn=None) -> dict:
                     data_source_kind, data_source)
                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
-                    common, lv1, lv2, lv3, name, unit, "", common_yn, "Y",
+                    common, lv1, lv2, lv3, name, unit, "", "단독", "Y",
                     definition_text, calc_logic_text, dept, calc_cycle, calc_timing,
                     data_source_kind, data_source,
                 ),
@@ -306,12 +305,12 @@ def export_workbook(xlsx_path: Path | None = None, conn=None) -> Path:
 
         ws = wb.create_sheet(SHEET_COMMON)
         ws.append([
-            "공통지표코드", "Lv1코드", "Lv2코드", "Lv3코드", "Lv3지표", "단위", "공통여부",
+            "공통지표코드", "Lv1코드", "Lv2코드", "Lv3코드", "Lv3지표", "단위",
             "지표정의", "산출로직", "주관부서", "산출주기", "산출시점", "데이터원천종류", "데이터원천",
         ])
         for r in conn.execute(
             """
-            SELECT common_code, lv1_code, lv2_code, lv3_code, name, unit, common_yn,
+            SELECT common_code, lv1_code, lv2_code, lv3_code, name, unit,
                    definition_text, calc_logic_text, dept, calc_cycle, calc_timing,
                    data_source_kind, data_source
             FROM indicator_common ORDER BY common_code
@@ -319,7 +318,7 @@ def export_workbook(xlsx_path: Path | None = None, conn=None) -> Path:
         ):
             ws.append([
                 r["common_code"], r["lv1_code"], r["lv2_code"], r["lv3_code"],
-                r["name"], r["unit"] or "", r["common_yn"],
+                r["name"], r["unit"] or "",
                 r["definition_text"] or "", r["calc_logic_text"] or "", r["dept"] or "",
                 r["calc_cycle"] or "", r["calc_timing"] or "",
                 r["data_source_kind"] or "", r["data_source"] or "",

@@ -69,7 +69,7 @@ export default function AgentQueryView({
     setQuestion(q)
 
     if (!settings.apiKey) {
-      setError('.env의 VITE_GEMINI_API_KEY 또는 화면 설정의 API Key가 없어 규칙 기반 답변만 표시합니다.')
+      setError('system/.env의 VITE_GEMINI_API_KEY가 없습니다. 키를 넣고 npm run dev를 재시작하세요. (규칙 기반 답변만 표시)')
       return
     }
 
