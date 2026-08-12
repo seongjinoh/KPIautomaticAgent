@@ -1,32 +1,63 @@
 const API_BASE = (import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8787').replace(/\/$/, '')
+const IS_REMOTE_API = /onrender\.com|vercel\.app/i.test(API_BASE)
 
-async function request(path, options = {}) {
-  const res = await fetch(`${API_BASE}${path}`, {
-    ...options,
-    headers: {
-      ...(options.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }),
-      ...(options.headers || {}),
-    },
-  })
-  let data = null
-  const text = await res.text()
+async function fetchWithTimeout(url, options = {}, timeoutMs = 0) {
+  if (!timeoutMs) return fetch(url, options)
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs)
   try {
-    data = text ? JSON.parse(text) : null
-  } catch {
-    data = { raw: text }
+    return await fetch(url, { ...options, signal: ctrl.signal })
+  } finally {
+    clearTimeout(timer)
   }
-  if (!res.ok) {
-    const err = new Error(data?.message || data?.error || `HTTP ${res.status}`)
-    err.status = res.status
-    err.data = data
-    throw err
+}
+
+async function request(path, options = {}, retryOpts = {}) {
+  const retries = retryOpts.retries ?? (IS_REMOTE_API ? 3 : 0)
+  const timeoutMs = retryOpts.timeoutMs ?? (IS_REMOTE_API ? 90000 : 0)
+  let lastErr
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    try {
+      const res = await fetchWithTimeout(`${API_BASE}${path}`, {
+        ...options,
+        headers: {
+          ...(options.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }),
+          ...(options.headers || {}),
+        },
+      }, timeoutMs)
+      let data = null
+      const text = await res.text()
+      try {
+        data = text ? JSON.parse(text) : null
+      } catch {
+        data = { raw: text }
+      }
+      if (!res.ok) {
+        const err = new Error(data?.message || data?.error || `HTTP ${res.status}`)
+        err.status = res.status
+        err.data = data
+        throw err
+      }
+      return data
+    } catch (e) {
+      lastErr = e
+      const retryable = attempt < retries && (
+        e.name === 'AbortError'
+        || e.message?.includes('Failed to fetch')
+        || e.status === 502
+        || e.status === 503
+        || e.status === 504
+      )
+      if (!retryable) throw e
+      await new Promise(r => setTimeout(r, 1500 * (attempt + 1)))
+    }
   }
-  return data
+  throw lastErr
 }
 
 export const api = {
   base: API_BASE,
-  health: () => request('/api/health'),
+  health: () => request('/api/health', {}, { retries: 4, timeoutMs: 120000 }),
   listLv1: () => request('/api/codes/lv1'),
   listLv2: (lv1) => request(`/api/codes/lv2${lv1 ? `?lv1=${encodeURIComponent(lv1)}` : ''}`),
   listGroups: (params = {}) => {

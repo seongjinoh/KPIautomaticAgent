@@ -151,6 +151,22 @@ function initMaster() {
 
 const monthKey = (year, month) => `${year}-${String(month).padStart(2, '0')}`
 
+/** 대시보드·그룹 상세 등에서만 월별 실적/점수를 미리 불러온다 (코드북·권한관리 등에서는 제외) */
+const VIEWS_PREFETCH_METRICS = new Set(['dashboard', 'detail', 'home', 'agent', 'anomaly', 'report', 'deptFacts'])
+
+/** 평가셋이 있는 연도 + 올해/내년 + (최대연도+1) — 새 연도 배치를 만들 수 있게 */
+const expandSelectableYears = (existingYears = [], selectedYear) => {
+  const now = new Date().getFullYear()
+  const existing = [...new Set((existingYears || []).map(Number).filter(y => Number.isFinite(y) && y >= 2000 && y <= 2100))]
+  const set = new Set(existing)
+  set.add(now)
+  set.add(now + 1)
+  if (existing.length) set.add(Math.max(...existing) + 1)
+  const sel = Number(selectedYear)
+  if (Number.isFinite(sel) && sel >= 2000 && sel <= 2100) set.add(sel)
+  return [...set].sort((a, b) => b - a)
+}
+
 const parseCustomTargets = (value) => {
   if (!value) return null
   if (typeof value === 'string') {
@@ -262,7 +278,11 @@ export default function App() {
     const now = new Date()
     return now.getMonth() === 0 ? now.getFullYear() - 1 : now.getFullYear()
   })
-  const [yearOptions, setYearOptions] = useState([])
+  const [evalYearsExisting, setEvalYearsExisting] = useState([])
+  const yearOptions = useMemo(
+    () => expandSelectableYears(evalYearsExisting, selectedYear),
+    [evalYearsExisting, selectedYear],
+  )
   const [detailTab, setDetailTab] = useState('summary')
   const [customTabs, setCustomTabs] = useState([])
   const [tabsHydratedKey, setTabsHydratedKey] = useState(null)
@@ -619,21 +639,34 @@ export default function App() {
   const reloadEvalYears = async () => {
     try {
       const res = await api.listEvalYears()
-      const years = (res.years || []).map(Number).filter(Boolean)
-      setYearOptions(years)
-      setSelectedYear(prev => (years.length && !years.includes(prev) ? years[0] : prev))
-      return years
+      const existing = (res.years || []).map(Number).filter(Boolean)
+      setEvalYearsExisting(existing)
+      setSelectedYear(prev => {
+        const years = expandSelectableYears(existing, prev)
+        // 새 연도(아직 평가셋 없음) 선택 유지. 확장 목록에도 없을 때만 최신으로.
+        if (years.length && !years.includes(prev)) return years[0]
+        return prev
+      })
+      return expandSelectableYears(existing)
     } catch {
-      setYearOptions([])
+      setEvalYearsExisting([])
       return []
     }
   }
 
   useEffect(() => {
-    let cancelled = false
     reloadEvalYears().then(() => { /* ignore */ })
-    // mount-only load of eval years
-    return () => { cancelled = true }
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') {
+        reloadEvalYears().then(() => { /* ignore */ })
+      }
+    }
+    document.addEventListener('visibilitychange', onVisible)
+    window.addEventListener('focus', onVisible)
+    return () => {
+      document.removeEventListener('visibilitychange', onVisible)
+      window.removeEventListener('focus', onVisible)
+    }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -763,6 +796,7 @@ export default function App() {
   }, [selectedYear, evalHistoryByYear, view])
 
   useEffect(() => {
+    if (!VIEWS_PREFETCH_METRICS.has(view)) return undefined
     let cancelled = false
     const targets = []
     for (const year of [selectedYear, prevYear]) {
@@ -803,9 +837,10 @@ export default function App() {
     })
     Promise.all(jobs)
     return () => { cancelled = true }
-  }, [selectedYear, prevYear, currentEvalKey, prevEvalKey, achievementsByMonth])
+  }, [view, selectedYear, prevYear, currentEvalKey, prevEvalKey, achievementsByMonth])
 
   useEffect(() => {
+    if (!VIEWS_PREFETCH_METRICS.has(view)) return undefined
     let cancelled = false
     const targets = []
     for (const year of [selectedYear, prevYear]) {
@@ -841,21 +876,25 @@ export default function App() {
     })
     Promise.all(jobs)
     return () => { cancelled = true }
-  }, [selectedYear, prevYear, currentEvalKey, prevEvalKey, groupScoresByMonth])
+  }, [view, selectedYear, prevYear, currentEvalKey, prevEvalKey, groupScoresByMonth])
 
   const handleRefreshFacts = async () => {
     setFactsRefreshing(true)
     setFactsMessage('')
     try {
-      const result = await api.refreshFacts({ year: selectedYear, month: selectedMonth })
-      const res = await api.listAchievements({ year: selectedYear, month: selectedMonth })
+      // 실적 새로고침 직전에 연도 목록을 다시 받아, 평가셋 복구 후에도 2026이 안 보이는 상태를 막는다
+      const years = await reloadEvalYears()
+      const year = (years.length && !years.includes(selectedYear)) ? years[0] : selectedYear
+      const key = monthKey(year, selectedMonth)
+      const result = await api.refreshFacts({ year, month: selectedMonth })
+      const res = await api.listAchievements({ year, month: selectedMonth })
       setAchievementsByMonth(prev => ({
         ...prev,
-        [currentEvalKey]: mapAchievementItems(res.items || [], selectedYear, selectedMonth),
+        [key]: mapAchievementItems(res.items || [], year, selectedMonth),
       }))
       try {
-        const scores = await api.listGroupScores({ year: selectedYear, month: selectedMonth })
-        setGroupScoresByMonth(prev => ({ ...prev, [currentEvalKey]: scores.items || [] }))
+        const scores = await api.listGroupScores({ year, month: selectedMonth })
+        setGroupScoresByMonth(prev => ({ ...prev, [key]: scores.items || [] }))
       } catch {
         // ignore
       }

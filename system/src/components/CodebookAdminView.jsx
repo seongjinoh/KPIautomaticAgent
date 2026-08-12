@@ -42,6 +42,7 @@ export default function CodebookAdminView() {
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
   const [apiOk, setApiOk] = useState(false)
+  const [wakeHint, setWakeHint] = useState('')
 
   const [groups, setGroups] = useState([])
   const [lv1List, setLv1List] = useState([])
@@ -68,9 +69,11 @@ export default function CodebookAdminView() {
   const reload = useCallback(async () => {
     setLoading(true)
     setError('')
+    setWakeHint(/onrender\.com/i.test(api.base) ? 'Render 서버 깨우는 중… (최대 1~2분)' : '')
     try {
       await api.health()
       setApiOk(true)
+      setWakeHint('')
       const [g, l1, l2, c, ic, ff] = await Promise.all([
         api.listGroups(),
         api.listLv1(),
@@ -87,9 +90,15 @@ export default function CodebookAdminView() {
       setFormulas(ff.items || [])
     } catch (e) {
       setApiOk(false)
-      setError(`API 연결 실패 (${api.base}). 서버를 실행하세요: python server/kpi_api.py`)
+      const cold = /onrender\.com/i.test(api.base)
+      setError(
+        cold
+          ? `API 연결 실패 (${api.base}). Render 무료 서버가 잠들었거나 재배포 중일 수 있습니다. 1~2분 후 「다시 시도」를 눌러 주세요.`
+          : `API 연결 실패 (${api.base}). 서버를 실행하세요: python server/kpi_api.py`,
+      )
     } finally {
       setLoading(false)
+      setWakeHint('')
     }
   }, [])
 
@@ -519,7 +528,14 @@ export default function CodebookAdminView() {
           ))}
         </div>
         <div className="flex items-center gap-2">
-          <span className={`text-xs ${apiOk ? 'text-emerald-700' : 'text-rose-600'}`}>{loading ? '로딩…' : apiOk ? 'API 연결' : 'API 끊김'}</span>
+          <span className={`text-xs ${apiOk ? 'text-emerald-700' : 'text-rose-600'}`}>
+            {loading ? (wakeHint || '로딩…') : apiOk ? 'API 연결' : 'API 끊김'}
+          </span>
+          {!apiOk && !loading && (
+            <button type="button" onClick={reload} className="text-xs font-semibold text-blue-700 hover:text-blue-800">
+              다시 시도
+            </button>
+          )}
           <a
             href={api.getCodesExportUrl()}
             className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-slate-200 bg-white text-sm"
@@ -539,6 +555,11 @@ export default function CodebookAdminView() {
             error ? 'border-rose-200 bg-rose-50 text-rose-800' : 'border-violet-200 bg-violet-50 text-violet-800'
           }`}>
             <p className="flex-1 leading-5">{error || feedback}</p>
+            {error && (
+              <button type="button" onClick={reload} className="shrink-0 text-xs font-semibold underline">
+                다시 시도
+              </button>
+            )}
             <button
               type="button"
               onClick={() => { setError(''); setFeedback('') }}
