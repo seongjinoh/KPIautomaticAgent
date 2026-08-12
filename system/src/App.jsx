@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useCallback } from 'react'
+import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
 import {
   KPI_DEFINITIONS,
   CODEBOOK,
@@ -276,6 +276,7 @@ export default function App() {
   const [groupScoresByMonth, setGroupScoresByMonth] = useState({})
   const [factsRefreshing, setFactsRefreshing] = useState(false)
   const [factsMessage, setFactsMessage] = useState('')
+  const evalHistoryLoadedRef = useRef(new Set())
 
   const prevYear = selectedYear - 1
   const currentEvalKey = useMemo(() => monthKey(selectedYear, selectedMonth), [selectedYear, selectedMonth])
@@ -671,43 +672,95 @@ export default function App() {
   }, [view, reloadEvalCodeCatalog])
 
   useEffect(() => {
+    // 구버전: 실패/빈 응답을 truthy 캐시로 고정 → 평가배치가 영구 빈 화면이 되던 문제 복구
+    setResolvedEvalConfigsByMonth((prev) => {
+      let changed = false
+      const next = { ...prev }
+      Object.entries(prev).forEach(([key, val]) => {
+        const empty = !val || !Array.isArray(val.items) || val.items.length === 0
+        if (empty && val?._loadStatus !== 'ok') {
+          delete next[key]
+          changed = true
+        }
+      })
+      return changed ? next : prev
+    })
+  }, [])
+
+  useEffect(() => {
     let cancelled = false
     const targets = [currentEvalKey, prevEvalKey]
     const jobs = targets.map(async (key) => {
-      if (resolvedEvalConfigsByMonth[key]) return
+      const cached = resolvedEvalConfigsByMonth[key]
+      if (cached && Array.isArray(cached.items) && cached.items.length > 0) return
+      if (cached && cached._loadStatus === 'ok') return
+      // error 캐시는 월 변경 전까지 재시도하지 않음(무한루프 방지). evalConfig 화면 진입 시 아래에서 클리어
+      if (cached && cached._loadStatus === 'error' && view !== 'evalConfig') return
       const [year, month] = key.split('-').map(Number)
       try {
         const res = await api.listEvalConfigs({ year, month })
         if (!cancelled) {
-          // 저장 등으로 이미 채워진 키는 stale 응답으로 덮지 않음
-          setResolvedEvalConfigsByMonth(prev => (
-            prev[key] ? prev : { ...prev, [key]: normalizeResolvedEvalConfig(res) }
-          ))
+          const next = { ...normalizeResolvedEvalConfig(res), _loadStatus: 'ok' }
+          setResolvedEvalConfigsByMonth((prev) => {
+            const cur = prev[key]
+            if (cur && Array.isArray(cur.items) && cur.items.length > 0 && !(next.items || []).length) {
+              return prev
+            }
+            return { ...prev, [key]: next }
+          })
         }
       } catch {
         if (!cancelled) {
-          setResolvedEvalConfigsByMonth(prev => (
-            prev[key] ? prev : { ...prev, [key]: normalizeResolvedEvalConfig({ year, month, items: [] }) }
-          ))
+          setResolvedEvalConfigsByMonth((prev) => {
+            if (prev[key] && Array.isArray(prev[key].items) && prev[key].items.length > 0) return prev
+            return {
+              ...prev,
+              [key]: { year, month, items: [], _loadStatus: 'error' },
+            }
+          })
         }
       }
     })
     Promise.all(jobs)
     return () => { cancelled = true }
-  }, [currentEvalKey, prevEvalKey, resolvedEvalConfigsByMonth])
+  }, [currentEvalKey, prevEvalKey, resolvedEvalConfigsByMonth, view])
+
+  useEffect(() => {
+    // 평가배치 화면 진입 시 실패 캐시 해제 → 재조회
+    if (view !== 'evalConfig') return undefined
+    setResolvedEvalConfigsByMonth((prev) => {
+      let changed = false
+      const next = { ...prev }
+      Object.entries(prev).forEach(([key, val]) => {
+        if (val && val._loadStatus === 'error') {
+          delete next[key]
+          changed = true
+        } else if (val && Array.isArray(val.items) && val.items.length === 0 && val._loadStatus !== 'ok') {
+          // 구버전 빈 고착 캐시
+          delete next[key]
+          changed = true
+        }
+      })
+      return changed ? next : prev
+    })
+    evalHistoryLoadedRef.current.delete(selectedYear)
+    return undefined
+  }, [view, selectedYear])
 
   useEffect(() => {
     let cancelled = false
-    if (evalHistoryByYear[selectedYear]) return undefined
+    if (evalHistoryLoadedRef.current.has(selectedYear)) return undefined
     api.listEvalConfigHistory({ year: selectedYear })
       .then((res) => {
-        if (!cancelled) setEvalHistoryByYear(prev => ({ ...prev, [selectedYear]: res.items || [] }))
+        if (cancelled) return
+        evalHistoryLoadedRef.current.add(selectedYear)
+        setEvalHistoryByYear((prev) => ({ ...prev, [selectedYear]: res.items || [] }))
       })
       .catch(() => {
-        if (!cancelled) setEvalHistoryByYear(prev => ({ ...prev, [selectedYear]: [] }))
+        // 실패 시 loaded 표시 안 함 → evalConfig 진입/연도 변경 시 재시도
       })
     return () => { cancelled = true }
-  }, [selectedYear, evalHistoryByYear])
+  }, [selectedYear, evalHistoryByYear, view])
 
   useEffect(() => {
     let cancelled = false

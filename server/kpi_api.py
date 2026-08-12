@@ -1932,6 +1932,18 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     ensure_demo_database()
     init_schema()
+    # 시트 지표가 없으면 로컬/Render DB에 자동 반영
+    try:
+        with get_connection() as conn:
+            has_sheet = conn.execute(
+                "SELECT 1 FROM indicator_code WHERE indicator_code='SOL-0009-0017-NEW-SHB'"
+            ).fetchone()
+        if not has_sheet:
+            from seed_sheet_indicators import run as seed_sheet
+            print("Sheet indicators missing — seeding…")
+            seed_sheet(refresh_facts=True)
+    except Exception as e:
+        print("sheet indicator seed skipped:", e)
     with get_connection() as conn:
         c = counts(conn)
         if c.get("indicator_code", 0) == 0 and DEFAULT_XLSX.exists():

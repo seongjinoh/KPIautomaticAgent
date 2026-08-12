@@ -173,11 +173,12 @@ export default function DashboardView({
   const hasAchievementData = currentRows.length > 0
 
   const overallAvg = useMemo(() => {
+    // 지표 실적이 없으면 그룹점수만으로 종합을 보여주지 않음 (배치/실적 없음과 모순)
+    if (!hasAchievementData) return null
     // 전행 종합 = SHB L1 (base_score)
     if (bankScore?.base_score != null && Number.isFinite(Number(bankScore.base_score))) {
       return fmt(bankScore.base_score)
     }
-    if (!hasAchievementData) return null
     const fromDefs = weightedAvgFor(bankDefinitions, results, selectedMonth)
     if (fromDefs != null) return fromDefs
     const bankSummary = groupSummaries.find((g) => isBankWideGroup(g.name))
