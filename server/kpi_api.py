@@ -283,6 +283,8 @@ def plan_item_query() -> str:
           e.sort_order,
           e.use_yn,
           e.contribution_mode,
+          e.target_start_month,
+          e.target_end_month,
           ic.common_code,
           ic.perf_code,
           ic.display_name,
@@ -375,6 +377,8 @@ def resolve_monthly_targets_for_save(item: dict, year: int, effective_month: int
                 "annual_target": annual,
                 "baseline_actual": baseline,
                 "achievement_mode": mode,
+                "target_start_month": _opt_int(item, "target_start_month", "targetStartMonth") or 1,
+                "target_end_month": _opt_int(item, "target_end_month", "targetEndMonth") or 12,
                 "year": year,
             },
             year,
@@ -491,7 +495,7 @@ class Handler(BaseHTTPRequestHandler):
     def _cors(self):
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, ngrok-skip-browser-warning")
 
     def do_OPTIONS(self):
         self.send_response(204)
@@ -779,8 +783,9 @@ class Handler(BaseHTTPRequestHandler):
                           h1_target, h2_target, score_rule, penalty_rule, cap_max, cap_min, remark, adj_band,
                           filters_json, formula_id, achievement_mode, goal_direction,
                           custom_achievement_expr, custom_monthly_targets_json,
-                          sort_order, use_yn, contribution_mode
-                        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                          sort_order, use_yn, contribution_mode,
+                          target_start_month, target_end_month
+                        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                         """,
                         (
                             plan_set_id,
@@ -840,6 +845,8 @@ class Handler(BaseHTTPRequestHandler):
                             _coerce_sort_order(item, idx),
                             str(item.get("use_yn") or item.get("useYn") or "Y").strip() or "Y",
                             contribution_mode,
+                            _opt_int(item, "target_start_month", "targetStartMonth", "평가시작월") or 1,
+                            _opt_int(item, "target_end_month", "targetEndMonth", "평가종료월") or 12,
                         ),
                     )
                 conn.commit()

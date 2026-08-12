@@ -134,10 +134,75 @@ export function daysToMonthEnd(year, month) {
   return Math.round((end - start) / 86400000) + 1
 }
 
+export function daysInMonth(year, month) {
+  const y = Number(year)
+  const m = Number(month)
+  if (!Number.isFinite(y) || !Number.isFinite(m) || m < 1 || m > 12) return null
+  return new Date(y, m, 0).getDate()
+}
+
+/** 평가시작월 ~ 해당 월 말일까지의 일수 */
+export function daysFromPeriodStart(year, month, startMonth = 1) {
+  const y = Number(year)
+  const m = Number(month)
+  const start = Number(startMonth) || 1
+  if (!Number.isFinite(y) || !Number.isFinite(m) || m < start || m > 12) return null
+  let days = 0
+  for (let mo = start; mo <= m; mo += 1) {
+    const d = daysInMonth(y, mo)
+    if (d == null) return null
+    days += d
+  }
+  return days
+}
+
+/** 평가시작월 1일 ~ 평가종료월 말일까지의 일수 */
+export function daysInEvalPeriod(year, startMonth = 1, endMonth = 12) {
+  const y = Number(year)
+  const start = Number(startMonth) || 1
+  const end = Number(endMonth) || 12
+  if (!Number.isFinite(y) || start < 1 || start > 12 || end < 1 || end > 12 || start > end) return null
+  let days = 0
+  for (let mo = start; mo <= end; mo += 1) {
+    const d = daysInMonth(y, mo)
+    if (d == null) return null
+    days += d
+  }
+  return days
+}
+
+export function normalizeEvalPeriod(def = {}) {
+  let start = Number(def?.targetStartMonth ?? def?.target_start_month ?? 1)
+  let end = Number(def?.targetEndMonth ?? def?.target_end_month ?? 12)
+  if (!Number.isFinite(start) || start < 1 || start > 12) start = 1
+  if (!Number.isFinite(end) || end < 1 || end > 12) end = 12
+  if (start > end) [start, end] = [end, start]
+  return { start, end }
+}
+
+export function isMonthInEvalPeriod(month, def = {}) {
+  const m = Number(month)
+  if (!Number.isFinite(m) || m < 1 || m > 12) return false
+  const { start, end } = normalizeEvalPeriod(def)
+  return m >= start && m <= end
+}
+
+/** 미리보기/저장용 — 의미 있는 월간목표 override만 주입 (기본 0은 Linear 계산을 막지 않음) */
+export function resolveMonthlyTargetOverride(draft, selectedMonth) {
+  const mt = draft?.monthlyTarget
+  if (mt != null && mt !== '' && Number.isFinite(Number(mt))) {
+    return { [selectedMonth]: Number(mt) }
+  }
+  return draft?.customMonthlyTargets || undefined
+}
+
 /** 월간 목표 산출 */
 export function computeMonthlyTarget(def, month, year = def?.year) {
   const m = Number(month)
   if (!Number.isFinite(m) || m < 1 || m > 12) return null
+
+  const { start, end } = normalizeEvalPeriod(def)
+  if (m < start || m > end) return null
 
   const mode = normalizeAchievementMode(def)
   const annual = Number(def?.annualTarget ?? 0)
@@ -158,12 +223,12 @@ export function computeMonthlyTarget(def, month, year = def?.year) {
     return round(annual, digits)
   }
 
-  // Linear: 기준실적 + (연간-기준) / 연간일수 × 경과일수 (윤년 366)
+  // Linear: 기준실적 + (연간-기준) / 평가기간일수 × 경과일수
   const y = Number(year) || new Date().getFullYear()
-  const elapsed = daysToMonthEnd(y, m)
-  const yearDays = daysInYear(y)
-  if (elapsed == null || !yearDays) return null
-  return round(baseline + (annual - baseline) * (elapsed / yearDays), digits)
+  const elapsed = daysFromPeriodStart(y, m, start)
+  const periodDays = daysInEvalPeriod(y, start, end)
+  if (elapsed == null || !periodDays) return null
+  return round(baseline + (annual - baseline) * (elapsed / periodDays), digits)
 }
 
 /** 1~12월 월간 목표 미리보기 */
@@ -194,7 +259,11 @@ export function calculateAchievementRate(def, actual, month, year = def?.year, f
       month: Number(month),
       annualTarget: Number(def?.annualTarget ?? 0),
       baseline: Number(def?.baselineActual ?? 0),
-      yearProgress: Number(month) / 12,
+      yearProgress: (() => {
+        const { start, end } = normalizeEvalPeriod(def)
+        const span = end - start + 1
+        return span > 0 ? (Number(month) - start + 1) / span : Number(month) / 12
+      })(),
     }
     if (filterValues && typeof filterValues === 'object') {
       Object.assign(vars, filterValues)
@@ -285,6 +354,7 @@ export function inferEvalCalcDefaults(def = {}) {
     ? Number(def.baselineActual)
     : (month1 != null ? Number(month1) : 0)
 
+  const { start, end } = normalizeEvalPeriod(def)
   return {
     achievementMode,
     goalDirection,
@@ -292,6 +362,8 @@ export function inferEvalCalcDefaults(def = {}) {
     customAchievementExpr: def.customAchievementExpr || '',
     customMonthlyTargets: def.customMonthlyTargets || null,
     customTargetMode: def.customTargetMode || 'auto',
+    targetStartMonth: start,
+    targetEndMonth: end,
   }
 }
 
@@ -305,5 +377,7 @@ export function enrichEvalConfigEntry(cfg = {}) {
     customAchievementExpr: cfg.customAchievementExpr ?? inferred.customAchievementExpr,
     customMonthlyTargets: cfg.customMonthlyTargets ?? inferred.customMonthlyTargets,
     customTargetMode: cfg.customTargetMode || inferred.customTargetMode,
+    targetStartMonth: cfg.targetStartMonth ?? cfg.target_start_month ?? inferred.targetStartMonth,
+    targetEndMonth: cfg.targetEndMonth ?? cfg.target_end_month ?? inferred.targetEndMonth,
   }
 }

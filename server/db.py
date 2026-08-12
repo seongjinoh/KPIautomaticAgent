@@ -27,6 +27,8 @@ EVAL_ITEM_EXTRA_COLUMNS = {
     "formula_id": "INTEGER",
     "is_core": "TEXT NOT NULL DEFAULT 'N'",
     "contribution_mode": "TEXT NOT NULL DEFAULT 'WEIGHT'",
+    "target_start_month": "INTEGER NOT NULL DEFAULT 1",
+    "target_end_month": "INTEGER NOT NULL DEFAULT 12",
 }
 
 
@@ -167,6 +169,8 @@ def _eval_plan_item_ddl() -> str:
           sort_order                INTEGER NOT NULL DEFAULT 0,
           use_yn                    TEXT NOT NULL DEFAULT 'Y',
           contribution_mode         TEXT NOT NULL DEFAULT 'WEIGHT',
+          target_start_month        INTEGER NOT NULL DEFAULT 1,
+          target_end_month          INTEGER NOT NULL DEFAULT 12,
           created_at                TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
           updated_at                TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
           FOREIGN KEY (plan_set_id) REFERENCES eval_plan_set(id) ON DELETE CASCADE,

@@ -38,6 +38,39 @@ def days_to_month_end(year: int, month: int) -> int:
     return (end - start).days + 1
 
 
+def days_in_month(year: int, month: int) -> int:
+    y, m = int(year), int(month)
+    if m < 1 or m > 12:
+        raise ValueError("month must be 1..12")
+    return calendar.monthrange(y, m)[1]
+
+
+def days_from_period_start(year: int, month: int, start_month: int = 1) -> int | None:
+    y, m, start = int(year), int(month), int(start_month or 1)
+    if m < start or m > 12:
+        return None
+    return sum(days_in_month(y, mo) for mo in range(start, m + 1))
+
+
+def days_in_eval_period(year: int, start_month: int = 1, end_month: int = 12) -> int | None:
+    y, start, end = int(year), int(start_month or 1), int(end_month or 12)
+    if start < 1 or start > 12 or end < 1 or end > 12 or start > end:
+        return None
+    return sum(days_in_month(y, mo) for mo in range(start, end + 1))
+
+
+def normalize_eval_period(def_row: dict) -> tuple[int, int]:
+    start = int(def_row.get("target_start_month") or def_row.get("targetStartMonth") or 1)
+    end = int(def_row.get("target_end_month") or def_row.get("targetEndMonth") or 12)
+    if start < 1 or start > 12:
+        start = 1
+    if end < 1 or end > 12:
+        end = 12
+    if start > end:
+        start, end = end, start
+    return start, end
+
+
 def normalize_mode(mode: str | None) -> str:
     m = str(mode or "linear").strip().lower()
     if m in ("flat", "custom"):
@@ -75,6 +108,9 @@ def compute_monthly_target(def_row: dict, month: int, year: int | None = None) -
     m = int(month)
     if m < 1 or m > 12:
         return None
+    start, end = normalize_eval_period(def_row)
+    if m < start or m > end:
+        return None
     mode = normalize_mode(def_row.get("achievement_mode") or def_row.get("achievementMode"))
     annual = float(def_row.get("annual_target") if def_row.get("annual_target") is not None else def_row.get("annualTarget") or 0)
     baseline = float(def_row.get("baseline_actual") if def_row.get("baseline_actual") is not None else def_row.get("baselineActual") or 0)
@@ -95,11 +131,13 @@ def compute_monthly_target(def_row: dict, month: int, year: int | None = None) -
     if mode == "custom":
         return round_value(annual, digits)
 
-    # Linear: baseline + (annual - baseline) / daysInYear * daysToMonthEnd
+    # Linear: baseline + (annual - baseline) / 평가기간일수 * 경과일수
     y = int(year if year is not None else def_row.get("year") or date.today().year)
-    elapsed = days_to_month_end(y, m)
-    year_days = days_in_year(y)
-    return round_value(baseline + (annual - baseline) * elapsed / year_days, digits)
+    elapsed = days_from_period_start(y, m, start)
+    period_days = days_in_eval_period(y, start, end)
+    if elapsed is None or not period_days:
+        return None
+    return round_value(baseline + (annual - baseline) * elapsed / period_days, digits)
 
 
 def build_monthly_targets_map(def_row: dict, year: int) -> dict[str, float]:

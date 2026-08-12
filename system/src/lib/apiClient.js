@@ -1,5 +1,13 @@
 const API_BASE = (import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8787').replace(/\/$/, '')
-const IS_REMOTE_API = /onrender\.com|vercel\.app/i.test(API_BASE)
+const IS_REMOTE_API = /onrender\.com|vercel\.app|ngrok(-free)?\.(app|dev|io)|ngrok\.io/i.test(API_BASE)
+const NGROK_HEADERS = /ngrok/i.test(API_BASE) ? { 'ngrok-skip-browser-warning': '1' } : {}
+
+/** 엑셀 다운로드 등 <a href>용 — 헤더를 못 넣으니 쿼리로도 우회 시도 */
+function withNgrokBypass(url) {
+  if (!/ngrok/i.test(String(url))) return url
+  const sep = String(url).includes('?') ? '&' : '?'
+  return `${url}${sep}ngrok-skip-browser-warning=1`
+}
 
 async function fetchWithTimeout(url, options = {}, timeoutMs = 0) {
   if (!timeoutMs) return fetch(url, options)
@@ -21,7 +29,8 @@ async function request(path, options = {}, retryOpts = {}) {
       const res = await fetchWithTimeout(`${API_BASE}${path}`, {
         ...options,
         headers: {
-          ...(options.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }),
+          ...(options.body instanceof FormData || !options.body ? {} : { 'Content-Type': 'application/json' }),
+          ...NGROK_HEADERS,
           ...(options.headers || {}),
         },
       }, timeoutMs)
@@ -116,9 +125,9 @@ export const api = {
   listEvalConfigHistory: ({ year }) => request(`/api/eval-configs/history?year=${encodeURIComponent(year)}`),
   listEvalYears: () => request('/api/eval-configs/years'),
   seedEvalDefaults: (body) => request('/api/eval-configs/seed-defaults', { method: 'POST', body: JSON.stringify(body) }),
-  getEvalTemplateUrl: () => `${API_BASE}/api/eval-configs/template`,
+  getEvalTemplateUrl: () => withNgrokBypass(`${API_BASE}/api/eval-configs/template`),
   getEvalExportUrl: ({ year, month } = {}) =>
-    `${API_BASE}/api/eval-configs/export?year=${encodeURIComponent(year)}&month=${encodeURIComponent(month)}`,
+    withNgrokBypass(`${API_BASE}/api/eval-configs/export?year=${encodeURIComponent(year)}&month=${encodeURIComponent(month)}`),
   importEvalConfigSet: async ({ year, month, file }) => {
     const form = new FormData()
     form.append('file', file)
@@ -135,7 +144,7 @@ export const api = {
     form.append('file', file)
     return request('/api/codes/import', { method: 'POST', body: form })
   },
-  getCodesExportUrl: () => `${API_BASE}/api/codes/export`,
+  getCodesExportUrl: () => withNgrokBypass(`${API_BASE}/api/codes/export`),
   refreshFacts: ({ year, month }) =>
     request(`/api/facts/refresh?year=${encodeURIComponent(year)}&month=${encodeURIComponent(month)}`, {
       method: 'POST',
@@ -211,7 +220,7 @@ export const api = {
   },
   listBankExportItems: (batchId) =>
     request(`/api/bank-export/${encodeURIComponent(batchId)}/items`),
-  getFactUploadTemplateUrl: () => `${API_BASE}/api/facts/upload-template`,
+  getFactUploadTemplateUrl: () => withNgrokBypass(`${API_BASE}/api/facts/upload-template`),
   uploadFactsPreview: async (file) => {
     if (!file) throw new Error('엑셀 파일이 필요합니다')
     const form = new FormData()
@@ -325,7 +334,7 @@ export const api = {
     if (scope) q.set('scope', scope)
     if (dept) q.set('dept', dept)
     if (group) q.set('group', group)
-    return `${API_BASE}/api/facts/dept-entry/export?${q.toString()}`
+    return withNgrokBypass(`${API_BASE}/api/facts/dept-entry/export?${q.toString()}`)
   },
   importDeptFactEntries: async (file, {
     year, month, dept, group, scope, actorRole = '',

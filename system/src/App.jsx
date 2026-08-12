@@ -234,6 +234,8 @@ const normalizeEvalRow = (row = {}) => {
     goalDirection: row.goalDirection || row.goal_direction || 'increase',
     customAchievementExpr: row.customAchievementExpr || row.custom_achievement_expr || '',
     customMonthlyTargets: row.customMonthlyTargets || parseCustomTargets(row.custom_monthly_targets_json) || null,
+    targetStartMonth: row.targetStartMonth ?? row.target_start_month ?? 1,
+    targetEndMonth: row.targetEndMonth ?? row.target_end_month ?? 12,
   })
 }
 
@@ -1162,6 +1164,8 @@ export default function App() {
                       : (row.weight ?? 0),
                     sortOrder: safeSort,
                     sort_order: safeSort,
+                    target_start_month: row.targetStartMonth ?? row.target_start_month ?? 1,
+                    target_end_month: row.targetEndMonth ?? row.target_end_month ?? 12,
                   }
                 })
                 const saved = await api.saveEvalConfigSet({ year: selectedYear, effectiveMonth, items: payloadItems, changeReason })

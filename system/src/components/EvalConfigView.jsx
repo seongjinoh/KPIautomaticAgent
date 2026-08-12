@@ -9,6 +9,9 @@ import {
   buildMonthlyTargetPreview,
   calculateAchievementRate,
   enrichEvalConfigEntry,
+  isMonthInEvalPeriod,
+  normalizeEvalPeriod,
+  resolveMonthlyTargetOverride,
 } from '../lib/achievementEngine'
 import ScoreRollupPanel from './ScoreRollupPanel'
 import IndicatorDefinitionPopup from './IndicatorDefinitionPopup'
@@ -26,7 +29,8 @@ const emptyEvalDraft = {
   indicatorCode: '', mgmtTool: 'KPI', weight: 0, isCore: false,
   contributionMode: 'WEIGHT',
   evalCategoryLv1: '', evalCategoryLv2: '', evalCategoryLv3: '', groupCode: '', groupName: '',
-  label: '', unit: '', annualTarget: 0, monthlyTarget: 0, baselineActual: 0,
+  label: '', unit: '', annualTarget: 0, monthlyTarget: null, baselineActual: 0,
+  targetStartMonth: 1, targetEndMonth: 12,
   collectType: '', dept: '', dataSource: '',
   definitionText: '', calcLogicText: '',
   h1Target: null, h2Target: null, scoreRule: '', adjBand: '', penaltyRule: '', capMax: null, capMin: null, remark: '',
@@ -783,9 +787,7 @@ export default function EvalConfigView({
     const enriched = enrichEvalConfigEntry({
       ...deferredEvalDraft,
       year: selectedYear,
-      monthlyTargets: deferredEvalDraft.monthlyTarget != null
-        ? { [selectedMonth]: Number(deferredEvalDraft.monthlyTarget) || 0 }
-        : deferredEvalDraft.customMonthlyTargets,
+      monthlyTargets: resolveMonthlyTargetOverride(deferredEvalDraft, selectedMonth),
       code: deferredEvalDraft.indicatorCode,
     })
     const targets = buildMonthlyTargetPreview(enriched, selectedYear)
@@ -941,7 +943,7 @@ export default function EvalConfigView({
       year: selectedYear,
       month: selectedMonth,
       code: evalDraft.indicatorCode,
-      monthlyTargets: evalDraft.monthlyTarget != null ? { [selectedMonth]: Number(evalDraft.monthlyTarget) || 0 } : evalDraft.customMonthlyTargets,
+      monthlyTargets: resolveMonthlyTargetOverride(evalDraft, selectedMonth),
     })
     delete entry._idx
     const nextConfig = [...(workingRows || [])]
@@ -1524,7 +1526,7 @@ export default function EvalConfigView({
                     >
                       <p className="text-xs font-black text-slate-800">{label}</p>
                       <p className="mt-1 text-[10px] leading-4 text-slate-500">
-                        {mode === 'linear' && '기준실적+(연간-기준)/연간일수×월말경과일수 (윤년 366)'}
+                        {mode === 'linear' && '기준실적+(연간-기준)/평가기간일수×월말경과일수'}
                         {mode === 'flat' && '매월 연간목표와 실적을 비교'}
                         {mode === 'custom' && '월간목표·Filter1~30·달성률 식으로 정의'}
                       </p>
@@ -1541,10 +1543,65 @@ export default function EvalConfigView({
                   </label>
                   {evalDraft.achievementMode === ACHIEVEMENT_MODES.LINEAR && (
                     <label className="text-xs text-slate-600 space-y-1">
-                      <span>기준실적 (연초/기준월)</span>
+                      <span>기준실적 (평가시작 기준)</span>
                       <input type="number" value={evalDraft.baselineActual ?? 0} onChange={e => setEvalDraft(prev => ({ ...prev, baselineActual: Number(e.target.value) || 0 }))} className="w-full px-2.5 py-2 rounded-lg border border-slate-200 text-sm" />
                     </label>
                   )}
+                </div>
+                <div className="rounded-xl border border-white bg-white p-3 space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <p className="text-xs font-bold text-slate-700">평가기간 (월별 목표 산정 구간)</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {[
+                        { label: '연간', start: 1, end: 12 },
+                        { label: '상반기', start: 1, end: 6 },
+                        { label: '하반기', start: 7, end: 12 },
+                      ].map(({ label, start, end }) => (
+                        <button
+                          key={label}
+                          type="button"
+                          onClick={() => setEvalDraft(prev => ({ ...prev, targetStartMonth: start, targetEndMonth: end }))}
+                          className={`rounded-lg border px-2 py-1 text-[10px] font-bold ${
+                            evalDraft.targetStartMonth === start && evalDraft.targetEndMonth === end
+                              ? 'border-emerald-500 bg-emerald-50 text-emerald-800'
+                              : 'border-slate-200 bg-slate-50 text-slate-600 hover:border-emerald-200'
+                          }`}
+                        >
+                          {label} ({start}~{end}월)
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <label className="text-xs text-slate-600 space-y-1">
+                      <span>평가 시작월</span>
+                      <select
+                        value={evalDraft.targetStartMonth ?? 1}
+                        onChange={e => setEvalDraft(prev => ({ ...prev, targetStartMonth: Number(e.target.value) }))}
+                        className="w-full px-2.5 py-2 rounded-lg border border-slate-200 text-sm bg-white"
+                      >
+                        {Array.from({ length: 12 }, (_, i) => i + 1).map(m => (
+                          <option key={m} value={m}>{m}월</option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="text-xs text-slate-600 space-y-1">
+                      <span>평가 종료월</span>
+                      <select
+                        value={evalDraft.targetEndMonth ?? 12}
+                        onChange={e => setEvalDraft(prev => ({ ...prev, targetEndMonth: Number(e.target.value) }))}
+                        className="w-full px-2.5 py-2 rounded-lg border border-slate-200 text-sm bg-white"
+                      >
+                        {Array.from({ length: 12 }, (_, i) => i + 1).map(m => (
+                          <option key={m} value={m}>{m}월</option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+                  <p className="text-[10px] text-slate-400">
+                    평가기간 밖 월은 목표·달성률 미리보기에서 제외(—)됩니다.
+                    Linear는 {normalizeEvalPeriod(evalDraft).start}월~{normalizeEvalPeriod(evalDraft).end}월 일수 기준으로 보간합니다.
+                  </p>
                 </div>
                 {evalDraft.achievementMode === ACHIEVEMENT_MODES.CUSTOM && (
                   <div className="space-y-3 rounded-xl border border-white bg-white p-3">
@@ -1564,10 +1621,19 @@ export default function EvalConfigView({
                     <div className="grid grid-cols-3 md:grid-cols-6 gap-2">
                       {Array.from({ length: 12 }, (_, idx) => {
                         const month = idx + 1
+                        const inPeriod = isMonthInEvalPeriod(month, evalDraft)
                         return (
-                          <label key={month} className="text-[10px] text-slate-500 space-y-1">
-                            <span>{month}월</span>
-                            <input type="number" value={evalDraft.customMonthlyTargets?.[month] ?? evalPreview.targets.find(t => t.month === month)?.target ?? ''} onChange={e => updateCustomMonthTarget(month, e.target.value)} className="w-full px-2 py-1.5 rounded border border-slate-200 text-xs" />
+                          <label key={month} className={`text-[10px] space-y-1 ${inPeriod ? 'text-slate-500' : 'text-slate-300'}`}>
+                            <span>{month}월{inPeriod ? '' : ' ·'}</span>
+                            <input
+                              type="number"
+                              disabled={!inPeriod}
+                              value={inPeriod
+                                ? (evalDraft.customMonthlyTargets?.[month] ?? evalPreview.targets.find(t => t.month === month)?.target ?? '')
+                                : ''}
+                              onChange={e => updateCustomMonthTarget(month, e.target.value)}
+                              className={`w-full px-2 py-1.5 rounded border text-xs ${inPeriod ? 'border-slate-200' : 'border-slate-100 bg-slate-50'}`}
+                            />
                           </label>
                         )
                       })}
@@ -1614,12 +1680,19 @@ export default function EvalConfigView({
                     </div>
                   </div>
                   <div className="grid grid-cols-6 md:grid-cols-12 gap-1">
-                    {evalPreview.targets.map(({ month, target }) => (
-                      <div key={month} className={`rounded-lg px-1.5 py-1 text-center ${month === previewMonth ? 'bg-emerald-100 border border-emerald-300' : 'bg-slate-50'}`}>
+                    {evalPreview.targets.map(({ month, target }) => {
+                      const inPeriod = isMonthInEvalPeriod(month, evalDraft)
+                      return (
+                      <div key={month} className={`rounded-lg px-1.5 py-1 text-center ${
+                        !inPeriod ? 'bg-slate-100/80 opacity-50'
+                          : month === previewMonth ? 'bg-emerald-100 border border-emerald-300'
+                          : 'bg-slate-50'
+                      }`}>
                         <p className="text-[9px] text-slate-400">{month}월</p>
-                        <p className="text-[10px] font-bold tabular-nums text-slate-700">{target ?? '—'}</p>
+                        <p className="text-[10px] font-bold tabular-nums text-slate-700">{inPeriod ? (target ?? '—') : '—'}</p>
                       </div>
-                    ))}
+                      )
+                    })}
                   </div>
                 </div>
               </section>
