@@ -4,14 +4,5 @@
   "buildCommand": "npm run build --prefix system",
   "outputDirectory": "system/dist",
   "framework": "vite",
-  "rewrites": [
-    {
-      "source": "/api/:path*",
-      "destination": "https://aiguilletted-quippish-monnie.ngrok-free.dev/api/:path*"
-    },
-    {
-      "source": "/(.*)",
-      "destination": "/index.html"
-    }
-  ]
+  "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }]
 }
