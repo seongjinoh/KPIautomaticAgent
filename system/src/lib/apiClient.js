@@ -1,5 +1,14 @@
-const API_BASE = (import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8787').replace(/\/$/, '')
+const envBase = import.meta.env.VITE_API_BASE
+// Vercel: VITE_API_BASE=same-origin → /api (vercel.json rewrite → ngrok)
+// 로컬: 미설정 또는 http://127.0.0.1:8787
+const API_BASE = (() => {
+  if (envBase === undefined || envBase === null || envBase === '') return 'http://127.0.0.1:8787'
+  const raw = String(envBase).trim().replace(/\/$/, '')
+  if (!raw || raw === 'same-origin' || raw === '/') return ''
+  return raw
+})()
 const IS_REMOTE_API = /onrender\.com|vercel\.app|ngrok(-free)?\.(app|dev|io)|ngrok\.io/i.test(API_BASE)
+  || (API_BASE === '' && typeof window !== 'undefined' && /vercel\.app$/i.test(window.location.hostname))
 const NGROK_HEADERS = /ngrok/i.test(API_BASE) ? { 'ngrok-skip-browser-warning': '1' } : {}
 
 /** 엑셀 다운로드 등 <a href>용 — 헤더를 못 넣으니 쿼리로도 우회 시도 */
