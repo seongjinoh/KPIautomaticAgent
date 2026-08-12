@@ -4,10 +4,5 @@
   "buildCommand": "npm run build --prefix system",
   "outputDirectory": "system/dist",
   "framework": "vite",
-  "rewrites": [
-    {
-      "source": "/((?!api/).*)",
-      "destination": "/index.html"
-    }
-  ]
+  "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }]
 }
