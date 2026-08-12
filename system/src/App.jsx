@@ -1,25 +1,69 @@
-import { useState, useMemo, useEffect } from 'react'
+import { useState, useMemo, useEffect, useCallback } from 'react'
 import {
-  KPI_DEFINITIONS, KPI_RESULTS, GROUPS, CATEGORIES,
-  CODEBOOK, CODEBOOK_META, NF_STRUCTURE,
-  BANK_DEFINITIONS, BANK_RESULTS,
-  PREV_KPI_DEFINITIONS, PREV_KPI_RESULTS, GROUPS_2025, CATEGORIES_2025, GROUP_MAPPING_2025,
+  KPI_DEFINITIONS,
+  CODEBOOK,
 } from './data/kpiData'
+import { filterEvalGroups } from './lib/orgGroup'
 import { buildMasterFromCodebook, buildEvalConfig, mergeToActiveDefs } from './data/migration'
+import { enrichEvalConfigEntry } from './lib/achievementEngine'
+import { api } from './lib/apiClient'
 import Sidebar from './components/Sidebar'
 import DashboardView from './components/DashboardView'
 import GroupDetailView from './components/GroupDetailView'
 import ReportView from './components/ReportView'
 import CodebookAdminView from './components/CodebookAdminView'
+import EvalConfigView from './components/EvalConfigView'
+import LoginView from './components/LoginView'
+import UserAdminView from './components/UserAdminView'
+import AgentQueryView from './components/AgentQueryView'
+import AnomalyCenterView from './components/AnomalyCenterView'
+import FactsAdminView from './components/FactsAdminView'
+import DeptFactEntryView from './components/DeptFactEntryView'
+import HomeWelcomeView from './components/HomeWelcomeView'
 import Header from './components/Header'
+import {
+  allowedGroupsForUser,
+  canAccessAdminMenu,
+  canAccessDashboard,
+  canAccessDeptFactEntry,
+  canAccessTopMenu,
+  filterDefinitionsForUser,
+  filterResultsForUser,
+  getCurrentSession,
+  logout,
+  resolveHomeForUser,
+  ROLES,
+} from './lib/authService'
 
+const DEFAULT_CATEGORIES = ['본원적 수익력', '건전성', '고객', '연결과 확장']
 const AGENDA_KEY_PREFIX = 'agenda.customTabs.'
 const LEGACY_AGENDA_SHARED_KEY = 'agenda.customTabs'
 const LEGACY_GROUP_DETAIL_PREFIX = 'groupDetail.customTabs.'
-const CODEBOOK_STORAGE_KEY = 'codebook.rows.v1'
-const STRUCTURE_STORAGE_KEY = 'codebook.structure.v1'
-const MASTER_STORAGE_KEY = 'indicator.master.v1'
-const EVAL_CONFIG_PREFIX = 'eval.config.'
+const AGENDA_TABS_PURGE_KEY = 'agenda.customTabs.purged.v1'
+
+/** 테스트용 잔여 탭(예: dd) 제거 — 1회만 실행 */
+const purgeStaleAgendaTabsOnce = () => {
+  if (typeof window === 'undefined') return
+  try {
+    if (window.localStorage.getItem(AGENDA_TABS_PURGE_KEY) === '1') return
+    const keysToRemove = []
+    for (let i = 0; i < window.localStorage.length; i += 1) {
+      const key = window.localStorage.key(i)
+      if (!key) continue
+      if (
+        key.startsWith(AGENDA_KEY_PREFIX)
+        || key === LEGACY_AGENDA_SHARED_KEY
+        || key.startsWith(LEGACY_GROUP_DETAIL_PREFIX)
+      ) {
+        keysToRemove.push(key)
+      }
+    }
+    keysToRemove.forEach((key) => window.localStorage.removeItem(key))
+    window.localStorage.setItem(AGENDA_TABS_PURGE_KEY, '1')
+  } catch {
+    // ignore
+  }
+}
 
 const normalizeTab = (tab, fallbackId) => {
   if (!tab || typeof tab !== 'object') return null
@@ -32,7 +76,6 @@ const normalizeTab = (tab, fallbackId) => {
     id,
     title,
     metricCodes,
-    pinToBottom: Boolean(tab.pinToBottom),
   }
 }
 
@@ -46,6 +89,7 @@ const parseTabs = (raw) => {
 }
 
 const readAgendaTabsWithMigration = (year) => {
+  purgeStaleAgendaTabsOnce()
   const currentKey = `${AGENDA_KEY_PREFIX}${year}`
   const migratedFrom = []
 
@@ -101,97 +145,455 @@ const readAgendaTabsWithMigration = (year) => {
 }
 
 function initMaster() {
-  if (typeof window === 'undefined') return buildMasterFromCodebook(CODEBOOK, KPI_DEFINITIONS)
-  try {
-    const raw = window.localStorage.getItem(MASTER_STORAGE_KEY)
-    if (raw) {
-      const parsed = JSON.parse(raw)
-      if (Array.isArray(parsed) && parsed.length > 0) return parsed
-    }
-  } catch { /* ignore */ }
-  let cb = CODEBOOK
-  try {
-    const raw = window.localStorage.getItem(CODEBOOK_STORAGE_KEY)
-    if (raw) {
-      const p = JSON.parse(raw)
-      if (Array.isArray(p) && p.length > 0) cb = p
-    }
-  } catch { /* ignore */ }
-  return buildMasterFromCodebook(cb, KPI_DEFINITIONS)
+  // 평가배치·대시보드용 레거시 마스터 (CODEBOOK 시드). 코드체계 관리는 API/SQLite.
+  return buildMasterFromCodebook(CODEBOOK, KPI_DEFINITIONS)
 }
 
-function initEvalConfigs(master) {
-  const configs = {}
-  const yearDefs = [[2026, KPI_DEFINITIONS], [2025, PREV_KPI_DEFINITIONS]]
-  for (const [year, defaultDefs] of yearDefs) {
-    if (typeof window !== 'undefined') {
-      try {
-        const raw = window.localStorage.getItem(`${EVAL_CONFIG_PREFIX}${year}`)
-        if (raw) {
-          const parsed = JSON.parse(raw)
-          if (Array.isArray(parsed) && parsed.length > 0) { configs[year] = parsed; continue }
-        }
-      } catch { /* ignore */ }
+const monthKey = (year, month) => `${year}-${String(month).padStart(2, '0')}`
+
+const parseCustomTargets = (value) => {
+  if (!value) return null
+  if (typeof value === 'string') {
+    try {
+      return JSON.parse(value)
+    } catch {
+      return null
     }
-    configs[year] = buildEvalConfig(defaultDefs, master, year)
   }
-  return configs
+  return value
 }
+
+const parseIsCore = (value) => {
+  if (value === true || value === 1) return true
+  if (value === false || value === 0 || value == null || value === '') return false
+  const s = String(value).trim().toUpperCase()
+  return ['Y', 'YES', '1', 'TRUE', 'T', 'CORE', 'O', '예'].includes(s)
+}
+
+const normalizeEvalRow = (row = {}) => {
+  let filters = row.filters || null
+  if (!filters && row.filters_json) {
+    try {
+      filters = typeof row.filters_json === 'string' ? JSON.parse(row.filters_json) : row.filters_json
+    } catch {
+      filters = null
+    }
+  }
+  return enrichEvalConfigEntry({
+    ...row,
+    indicatorCode: row.indicatorCode || row.indicator_code || '',
+    code: row.indicatorCode || row.indicator_code || row.code || '',
+    mgmtTool: row.mgmtTool || row.mgmt_tool || 'KPI',
+    groupCode: row.groupCode || row.group_code || '',
+    groupName: row.groupName || row.group_name || '',
+    group: row.group || row.groupName || row.group_name || '',
+    contributionMode: String(row.contributionMode || row.contribution_mode || 'WEIGHT').toUpperCase() === 'ADJUST' ? 'ADJUST' : 'WEIGHT',
+    displayName: row.displayName || row.display_name || '',
+    evalCategoryLv1: row.evalCategoryLv1 || row.eval_category_lv1 || '',
+    evalCategoryLv2: row.evalCategoryLv2 || row.eval_category_lv2 || '',
+    evalCategoryLv3: row.evalCategoryLv3 || row.eval_category_lv3 || '',
+    weight: row.weight ?? 0,
+    isCore: parseIsCore(row.isCore ?? row.is_core ?? row.Core),
+    monthlyTarget: row.monthlyTarget ?? row.monthly_target ?? null,
+    annualTarget: row.annualTarget ?? row.annual_target ?? 0,
+    baselineActual: row.baselineActual ?? row.baseline_actual ?? 0,
+    collectType: row.collectType || row.collect_type || '',
+    dataSource: row.dataSource || row.data_source || '',
+    definitionText: row.definitionText || row.definition_text || '',
+    calcLogicText: row.calcLogicText || row.calc_logic_text || '',
+    h1Target: row.h1Target ?? row.h1_target ?? null,
+    h2Target: row.h2Target ?? row.h2_target ?? null,
+    scoreRule: row.scoreRule || row.score_rule || '',
+    penaltyRule: row.penaltyRule || row.penalty_rule || '',
+    adjBand: row.adjBand || row.adj_band || '',
+    capMax: row.capMax ?? row.cap_max ?? null,
+    capMin: row.capMin ?? row.cap_min ?? null,
+    remark: row.remark || '',
+    lv3Name: row.lv3Name || row.lv3_name || '',
+    sortOrder: Number(row.sortOrder ?? row.sort_order ?? 0),
+    filters,
+    filtersJson: row.filters_json || (filters ? JSON.stringify(filters) : null),
+    formulaId: row.formulaId ?? row.formula_id ?? null,
+    achievementMode: row.achievementMode || row.achievement_mode || 'linear',
+    goalDirection: row.goalDirection || row.goal_direction || 'increase',
+    customAchievementExpr: row.customAchievementExpr || row.custom_achievement_expr || '',
+    customMonthlyTargets: row.customMonthlyTargets || parseCustomTargets(row.custom_monthly_targets_json) || null,
+  })
+}
+
+const mapAchievementItems = (items = [], year, month) => (items || []).map((row) => ({
+  code: row.indicator_code || row.indicatorCode || row.code,
+  group: row.group_name || row.groupName || row.group_code || row.groupCode || '',
+  month: Number(month),
+  year: Number(year),
+  period: `${year}${String(month).padStart(2, '0')}`,
+  actual: row.actual,
+  target: row.monthly_target ?? row.monthlyTarget ?? null,
+  achievement: row.converted_achievement ?? row.convertedAchievement ?? row.simple_achievement ?? null,
+  mgmtTool: row.mgmt_tool || row.mgmtTool || 'KPI',
+  weight: row.weight ?? 0,
+  category: row.eval_category_lv1 || row.evalCategoryLv1 || row.category || '',
+  categoryL2: row.eval_category_lv2 || row.evalCategoryLv2 || '',
+  categoryL3: row.eval_category_lv3 || row.evalCategoryLv3 || '',
+  name: row.label || row.display_name || '',
+  unit: row.unit || '',
+}))
+
+const normalizeResolvedEvalConfig = (payload = {}) => ({
+  planSetId: payload.plan_set_id ?? payload.planSetId ?? null,
+  year: payload.year ?? null,
+  month: payload.month ?? null,
+  resolvedFromMonth: payload.resolved_from_month ?? payload.resolvedFromMonth ?? null,
+  isInherited: Boolean(payload.is_inherited ?? payload.isInherited),
+  changeReason: payload.change_reason ?? payload.changeReason ?? '',
+  items: (payload.items || []).map(normalizeEvalRow),
+})
 
 export default function App() {
-  const [view, setView] = useState('dashboard')
-  const [selectedGroup, setSelectedGroup] = useState(null)
-  const [selectedMonth, setSelectedMonth] = useState(12)
+  const [currentUser, setCurrentUser] = useState(() => getCurrentSession())
+  const [view, setView] = useState(() => resolveHomeForUser(getCurrentSession(), []).view)
+  const [selectedGroup, setSelectedGroup] = useState(() => resolveHomeForUser(getCurrentSession(), []).selectedGroup)
+  const [selectedMonth, setSelectedMonth] = useState(() => {
+    const now = new Date()
+    return now.getMonth() === 0 ? 12 : now.getMonth() // 직전월 (1월이면 12월)
+  })
   const [toolFilter, setToolFilter] = useState('전체')
-  const [selectedYear, setSelectedYear] = useState(2026)
+  const [selectedYear, setSelectedYear] = useState(() => {
+    const now = new Date()
+    return now.getMonth() === 0 ? now.getFullYear() - 1 : now.getFullYear()
+  })
+  const [yearOptions, setYearOptions] = useState([])
   const [detailTab, setDetailTab] = useState('summary')
   const [customTabs, setCustomTabs] = useState([])
   const [tabsHydratedKey, setTabsHydratedKey] = useState(null)
 
-  const [indicatorMaster, setIndicatorMaster] = useState(initMaster)
-  const [evalConfigs, setEvalConfigs] = useState(() => initEvalConfigs(initMaster()))
+  const [indicatorMaster] = useState(initMaster)
+  const [evalCodeCatalog, setEvalCodeCatalog] = useState([])
+  const [ownerGroupRows, setOwnerGroupRows] = useState([])
+  const [resolvedEvalConfigsByMonth, setResolvedEvalConfigsByMonth] = useState({})
+  const [evalHistoryByYear, setEvalHistoryByYear] = useState({})
+  const [achievementsByMonth, setAchievementsByMonth] = useState({})
+  const [groupScoresByMonth, setGroupScoresByMonth] = useState({})
+  const [factsRefreshing, setFactsRefreshing] = useState(false)
+  const [factsMessage, setFactsMessage] = useState('')
 
-  const [structureRows, setStructureRows] = useState(() => {
-    if (typeof window === 'undefined') return NF_STRUCTURE
-    try {
-      const raw = window.localStorage.getItem(STRUCTURE_STORAGE_KEY)
-      if (!raw) return NF_STRUCTURE
-      const parsed = JSON.parse(raw)
-      return Array.isArray(parsed) ? parsed : NF_STRUCTURE
-    } catch {
-      return NF_STRUCTURE
-    }
-  })
-
-  const is2026 = selectedYear === 2026
-  const activeCats = is2026 ? CATEGORIES : CATEGORIES_2025
-  const activeGroups = is2026 ? GROUPS : GROUPS_2025
-
+  const prevYear = selectedYear - 1
+  const currentEvalKey = useMemo(() => monthKey(selectedYear, selectedMonth), [selectedYear, selectedMonth])
+  const currentResolvedEval = resolvedEvalConfigsByMonth[currentEvalKey] || { items: [] }
   const activeDefs = useMemo(
-    () => mergeToActiveDefs(indicatorMaster, evalConfigs[selectedYear] || [], selectedYear),
-    [indicatorMaster, evalConfigs, selectedYear],
+    () => mergeToActiveDefs(evalCodeCatalog, currentResolvedEval.items || [], selectedYear).map(d => ({ ...d, year: selectedYear })),
+    [evalCodeCatalog, currentResolvedEval, selectedYear],
   )
-  const activeResults = is2026 ? KPI_RESULTS : PREV_KPI_RESULTS
+  const prevEvalKey = useMemo(() => monthKey(prevYear, selectedMonth), [prevYear, selectedMonth])
+  const prevResolvedEval = resolvedEvalConfigsByMonth[prevEvalKey] || { items: [] }
+  const prevActiveDefs = useMemo(
+    () => mergeToActiveDefs(evalCodeCatalog, prevResolvedEval.items || [], prevYear).map(d => ({ ...d, year: prevYear })),
+    [evalCodeCatalog, prevResolvedEval, prevYear],
+  )
+  const activeResultsRaw = achievementsByMonth[currentEvalKey] || []
+  const scopedDefs = useMemo(
+    () => filterDefinitionsForUser(currentUser, activeDefs),
+    [currentUser, activeDefs],
+  )
+  const activeResults = useMemo(() => {
+    return filterResultsForUser(currentUser, activeResultsRaw, activeDefs)
+  }, [currentUser, activeResultsRaw, activeDefs])
+  const yearResultsRaw = useMemo(() => {
+    const out = []
+    for (let m = 1; m <= 12; m += 1) {
+      out.push(...(achievementsByMonth[monthKey(selectedYear, m)] || []))
+    }
+    return out
+  }, [achievementsByMonth, selectedYear])
+
+  const resolvedPrevResults = useMemo(() => {
+    const out = []
+    for (let m = 1; m <= 12; m += 1) {
+      out.push(...(achievementsByMonth[monthKey(prevYear, m)] || []))
+    }
+    return out
+  }, [achievementsByMonth, prevYear])
+
+  const groupNameByCode = useMemo(() => {
+    const map = {}
+    ;(ownerGroupRows || []).forEach((g) => {
+      const code = String(g.code || '').trim().toUpperCase()
+      if (code) map[code] = String(g.name || '').trim()
+    })
+    return map
+  }, [ownerGroupRows])
+
+  const groupCodeByName = useMemo(() => {
+    const map = {}
+    Object.entries(groupNameByCode).forEach(([code, name]) => {
+      if (name) map[name] = code
+    })
+    return map
+  }, [groupNameByCode])
+
+  const currentGroupScores = groupScoresByMonth[currentEvalKey] || []
+  const prevGroupScores = groupScoresByMonth[prevEvalKey] || []
+  const bankGroupScore = useMemo(() => {
+    return (currentGroupScores || []).find((r) => String(r.group_code || '').toUpperCase() === 'SHB') || null
+  }, [currentGroupScores])
+  const prevBankGroupScore = useMemo(() => {
+    return (prevGroupScores || []).find((r) => String(r.group_code || '').toUpperCase() === 'SHB') || null
+  }, [prevGroupScores])
+
+  const scoreByGroupName = useMemo(() => {
+    const map = {}
+    ;(currentGroupScores || []).forEach((r) => {
+      const name = r.group_name || groupNameByCode[String(r.group_code || '').toUpperCase()]
+      if (name) map[name] = r
+    })
+    return map
+  }, [currentGroupScores, groupNameByCode])
+
+  const prevScoreByGroupName = useMemo(() => {
+    const map = {}
+    ;(prevGroupScores || []).forEach((r) => {
+      const name = r.group_name || groupNameByCode[String(r.group_code || '').toUpperCase()]
+      if (name) map[name] = r
+    })
+    return map
+  }, [prevGroupScores, groupNameByCode])
+
+  // 달성률 전월비: 직전 월 group_score (1월은 전년 12월). YoY용 prevEvalKey와 다름.
+  const momEvalKey = useMemo(() => (
+    selectedMonth > 1
+      ? monthKey(selectedYear, selectedMonth - 1)
+      : monthKey(prevYear, 12)
+  ), [selectedYear, selectedMonth, prevYear])
+  const momGroupScores = groupScoresByMonth[momEvalKey] || []
+  const momScoreByGroupName = useMemo(() => {
+    const map = {}
+    ;(momGroupScores || []).forEach((r) => {
+      const name = r.group_name || groupNameByCode[String(r.group_code || '').toUpperCase()]
+      if (name) map[name] = r
+    })
+    return map
+  }, [momGroupScores, groupNameByCode])
+
+  /** 선택 그룹의 연내 월별 L1/L2/L3 — 시각화 디폴트 차트용 */
+  const yearGroupScoresForSelected = useMemo(() => {
+    if (!selectedGroup) return []
+    const out = []
+    for (let m = 1; m <= 12; m += 1) {
+      const items = groupScoresByMonth[monthKey(selectedYear, m)] || []
+      const row = items.find((r) => {
+        const name = r.group_name || groupNameByCode[String(r.group_code || '').toUpperCase()]
+        return name === selectedGroup
+      }) || null
+      out.push({
+        month: m,
+        ultimate_score: row?.ultimate_score ?? null,
+        base_score: row?.base_score ?? null,
+        group_final_score: row?.group_final_score ?? null,
+        adjust_points: row?.adjust_points ?? null,
+      })
+    }
+    return out
+  }, [selectedGroup, selectedYear, groupScoresByMonth, groupNameByCode])
+
+  const activeCats = useMemo(() => {
+    const fromDefs = [...new Set(
+      (scopedDefs.length ? scopedDefs : activeDefs)
+        .map(d => d.category || d.evalCategoryLv1 || d.eval_category_lv1)
+        .filter(Boolean),
+    )]
+    return fromDefs.length ? fromDefs : DEFAULT_CATEGORIES
+  }, [scopedDefs, activeDefs])
+
+  // 사용자 권한 배정용: 코드마스터 전체 그룹
+  const evalOwnerGroupRows = useMemo(
+    () => filterEvalGroups(ownerGroupRows),
+    [ownerGroupRows],
+  )
+
+  const masterGroupNames = useMemo(() => {
+    const fromApi = evalOwnerGroupRows.map(g => g.name).filter(Boolean)
+    if (fromApi.length) return fromApi
+    return [...new Set(activeDefs.map(d => d.group).filter(Boolean))]
+  }, [evalOwnerGroupRows, activeDefs])
+
+  // 해당 연·월 평가배치 캐시 로딩 여부 (미로딩 시 빈 배열로 착각하지 않도록)
+  const isCurrentEvalResolved = Object.prototype.hasOwnProperty.call(
+    resolvedEvalConfigsByMonth,
+    currentEvalKey,
+  )
+
+  // 사이드바용: 선택 연도의 평가배치에 등장한 그룹 (월 단위로 목록이 깜빡이지 않게 연 단위 union)
+  const yearEvalGroupNames = useMemo(() => {
+    const sortIndex = new Map(
+      (ownerGroupRows || []).map((g, i) => [g.name, g.sort_order ?? g.sortOrder ?? i]),
+    )
+    const nameSet = new Set()
+    const yearPrefix = `${selectedYear}-`
+    for (const [key, cfg] of Object.entries(resolvedEvalConfigsByMonth || {})) {
+      if (!String(key).startsWith(yearPrefix)) continue
+      const defs = mergeToActiveDefs(evalCodeCatalog, cfg.items || [], selectedYear)
+      for (const d of defs) {
+        if (d.mgmtTool && d.mgmtTool !== 'KPI') continue
+        if (d.group) nameSet.add(d.group)
+      }
+    }
+    // 현재 월이 아직 캐시에 없으면 activeDefs도 비어 있을 수 있음 → 위 union만 사용
+    if (isCurrentEvalResolved) {
+      for (const d of activeDefs || []) {
+        if (d.mgmtTool && d.mgmtTool !== 'KPI') continue
+        if (d.group) nameSet.add(d.group)
+      }
+    }
+    return [...nameSet].sort((a, b) => {
+      const ai = sortIndex.has(a) ? Number(sortIndex.get(a)) : Number.MAX_SAFE_INTEGER
+      const bi = sortIndex.has(b) ? Number(sortIndex.get(b)) : Number.MAX_SAFE_INTEGER
+      if (ai !== bi) return ai - bi
+      return String(a).localeCompare(String(b), 'ko')
+    })
+  }, [
+    activeDefs,
+    ownerGroupRows,
+    resolvedEvalConfigsByMonth,
+    selectedYear,
+    evalCodeCatalog,
+    isCurrentEvalResolved,
+  ])
+
+  const activeGroups = useMemo(
+    () => allowedGroupsForUser(currentUser, yearEvalGroupNames),
+    [currentUser, yearEvalGroupNames],
+  )
 
   const detailStorageKey = useMemo(
     () => `agenda.customTabs.${selectedYear}`,
     [selectedYear],
   )
 
-  const kpiDefs = useMemo(() => activeDefs.filter(d => d.mgmtTool === 'KPI'), [activeDefs])
-  const isAgendaMode = detailTab === 'agenda' || detailTab.startsWith('custom:')
-  const detailDefinitions = useMemo(() => {
-    if (isAgendaMode) return activeDefs.filter(d => d.mgmtTool === 'KPI')
-    return activeDefs.filter(k => k.group === selectedGroup)
-  }, [isAgendaMode, activeDefs, selectedGroup])
-  const detailResults = useMemo(() => {
-    if (isAgendaMode) return activeResults.filter(r => r.mgmtTool === 'KPI')
-    return activeResults.filter(r => r.group === selectedGroup)
-  }, [isAgendaMode, activeResults, selectedGroup])
+  const kpiDefs = useMemo(() => scopedDefs.filter(d => d.mgmtTool === 'KPI'), [scopedDefs])
+  const isAgendaMode = detailTab.startsWith('custom:')
+  const selectedCustomTab = useMemo(() => {
+    if (!isAgendaMode) return null
+    const id = detailTab.replace('custom:', '')
+    return customTabs.find(t => t.id === id) ?? null
+  }, [isAgendaMode, detailTab, customTabs])
 
+  const detailDefinitions = useMemo(() => {
+    if (isAgendaMode) {
+      let defs = scopedDefs.filter(d => d.mgmtTool === 'KPI')
+      const codes = selectedCustomTab?.metricCodes
+      if (codes?.length) {
+        const allow = new Set(codes)
+        defs = defs.filter(d => allow.has(d.code) || allow.has(d.indicatorCode))
+      } else {
+        defs = []
+      }
+      return defs
+    }
+    return scopedDefs.filter(k => k.group === selectedGroup)
+  }, [isAgendaMode, scopedDefs, selectedGroup, selectedCustomTab])
+
+  const detailCategories = useMemo(() => {
+    const fromDefs = [...new Set(
+      detailDefinitions
+        .map(d => d.category || d.evalCategoryLv1 || d.eval_category_lv1)
+        .filter(Boolean),
+    )]
+    return fromDefs.length ? fromDefs : activeCats
+  }, [detailDefinitions, activeCats])
+
+  const detailResults = useMemo(() => {
+    const scoped = filterResultsForUser(currentUser, yearResultsRaw, activeDefs)
+    if (isAgendaMode) {
+      const allow = new Set(selectedCustomTab?.metricCodes || [])
+      if (!allow.size) return []
+      return scoped.filter(r => r.mgmtTool === 'KPI' && (allow.has(r.code) || allow.has(r.indicatorCode)))
+    }
+    return scoped.filter(r => r.group === selectedGroup)
+  }, [isAgendaMode, currentUser, yearResultsRaw, activeDefs, selectedGroup, selectedCustomTab])
+
+  const dashboardResults = useMemo(() => {
+    return filterResultsForUser(currentUser, yearResultsRaw, activeDefs)
+      .filter(r => r.mgmtTool === 'KPI')
+  }, [currentUser, yearResultsRaw, activeDefs])
+
+  const dashboardPrevResults = useMemo(() => {
+    const defs = (prevActiveDefs || []).length ? prevActiveDefs : activeDefs
+    return filterResultsForUser(currentUser, resolvedPrevResults, defs)
+      .filter(r => r.mgmtTool === 'KPI')
+  }, [currentUser, resolvedPrevResults, prevActiveDefs, activeDefs])
+
+  const dashboardPrevDefs = useMemo(() => {
+    const defs = filterDefinitionsForUser(currentUser, prevActiveDefs || [])
+    return defs.filter(d => d.mgmtTool === 'KPI')
+  }, [currentUser, prevActiveDefs])
+
+  // 연도 변경 시에만 상세 탭 초기화 (그룹 클릭은 handleGroupClick에서 처리)
   useEffect(() => {
     setDetailTab('summary')
-  }, [selectedGroup, selectedYear])
+  }, [selectedYear])
+
+  useEffect(() => {
+    if (!currentUser) return
+
+    const applyHome = () => {
+      const home = resolveHomeForUser(currentUser, activeGroups)
+      setView(home.view)
+      setSelectedGroup(home.selectedGroup)
+      if (home.view === 'detail') setDetailTab('summary')
+    }
+
+    if ((view === 'codebook' || view === 'evalConfig' || view === 'users' || view === 'facts') && !canAccessAdminMenu(currentUser)) {
+      applyHome()
+      return
+    }
+    if (view === 'deptFacts' && !canAccessDeptFactEntry(currentUser)) {
+      applyHome()
+      return
+    }
+    if ((view === 'dashboard' || view === 'agent' || view === 'anomaly') && !canAccessTopMenu(currentUser)) {
+      applyHome()
+      return
+    }
+    // 월 전환 직후 평가배치 미로딩이면 그룹이 비어 보이므로 화면 이동하지 않음
+    if (!isCurrentEvalResolved) return
+
+    // Agenda 모드가 아닌데 그룹이 비면 첫 그룹으로 보정
+    if (
+      view === 'detail'
+      && !String(detailTab || '').startsWith('custom:')
+      && !selectedGroup
+      && activeGroups.length > 0
+    ) {
+      setSelectedGroup(activeGroups[0])
+      setDetailTab('summary')
+      return
+    }
+
+    // 연도 전환 등으로 선택 그룹이 그 해 배치에 없을 때만 보정 (월 변경으로 메인 튕김 방지)
+    if (selectedGroup && !activeGroups.includes(selectedGroup)) {
+      if (activeGroups.length > 0) {
+        setSelectedGroup(activeGroups[0])
+        setDetailTab('summary')
+      } else {
+        setSelectedGroup(null)
+        if (view === 'detail' && !String(detailTab || '').startsWith('custom:')) {
+          applyHome()
+        }
+      }
+    }
+  }, [currentUser, view, selectedGroup, activeGroups, selectedYear, isCurrentEvalResolved, detailTab])
+
+  const applyRoleHome = (user, groups = activeGroups) => {
+    const home = resolveHomeForUser(user, groups)
+    setView(home.view)
+    setSelectedGroup(home.selectedGroup)
+    if (home.view === 'detail') setDetailTab('summary')
+  }
+
+  const handleLogin = (user) => {
+    setCurrentUser(user)
+    applyRoleHome(user, [])
+  }
 
   useEffect(() => {
     setTabsHydratedKey(null)
@@ -213,72 +615,275 @@ export default function App() {
     }
   }, [customTabs, detailStorageKey, tabsHydratedKey])
 
-  useEffect(() => {
+  const reloadEvalYears = async () => {
     try {
-      window.localStorage.setItem(MASTER_STORAGE_KEY, JSON.stringify(indicatorMaster))
-    } catch { /* ignore */ }
-  }, [indicatorMaster])
-
-  useEffect(() => {
-    try {
-      Object.entries(evalConfigs).forEach(([year, config]) => {
-        window.localStorage.setItem(`${EVAL_CONFIG_PREFIX}${year}`, JSON.stringify(config))
-      })
-    } catch { /* ignore */ }
-  }, [evalConfigs])
-
-  useEffect(() => {
-    try {
-      window.localStorage.setItem(STRUCTURE_STORAGE_KEY, JSON.stringify(structureRows))
+      const res = await api.listEvalYears()
+      const years = (res.years || []).map(Number).filter(Boolean)
+      setYearOptions(years)
+      setSelectedYear(prev => (years.length && !years.includes(prev) ? years[0] : prev))
+      return years
     } catch {
-      // ignore
+      setYearOptions([])
+      return []
     }
-  }, [structureRows])
+  }
 
-  const bankKpiSummary = useMemo(() => {
-    if (!is2026) return []
-    return CATEGORIES.map(cat => {
-      const catItems = BANK_RESULTS.filter(b => b.month === selectedMonth && b.category === cat)
-      const tw = catItems.reduce((s, b) => s + (b.weight ?? 0), 0)
-      const ws = catItems.reduce((s, b) => s + (b.achievement ?? 0) * (b.weight ?? 0), 0)
-      return { category: cat, achievement: tw > 0 ? Math.round(ws / tw * 10) / 10 : 0 }
+  useEffect(() => {
+    let cancelled = false
+    reloadEvalYears().then(() => { /* ignore */ })
+    // mount-only load of eval years
+    return () => { cancelled = true }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    const loadCatalog = () => {
+      api.listCodes()
+        .then((res) => { if (!cancelled) setEvalCodeCatalog(res.items || []) })
+        .catch(() => { if (!cancelled) setEvalCodeCatalog([]) })
+    }
+    const loadGroups = () => {
+      api.listGroups()
+        .then((res) => { if (!cancelled) setOwnerGroupRows(res.items || []) })
+        .catch(() => { if (!cancelled) setOwnerGroupRows([]) })
+    }
+    loadCatalog()
+    loadGroups()
+    return () => { cancelled = true }
+  }, [])
+
+  const reloadEvalCodeCatalog = useCallback(async () => {
+    try {
+      const res = await api.listCodes()
+      setEvalCodeCatalog(res.items || [])
+      return res.items || []
+    } catch {
+      setEvalCodeCatalog([])
+      return []
+    }
+  }, [])
+
+  useEffect(() => {
+    if (view === 'evalConfig') {
+      reloadEvalCodeCatalog()
+    }
+  }, [view, reloadEvalCodeCatalog])
+
+  useEffect(() => {
+    let cancelled = false
+    const targets = [currentEvalKey, prevEvalKey]
+    const jobs = targets.map(async (key) => {
+      if (resolvedEvalConfigsByMonth[key]) return
+      const [year, month] = key.split('-').map(Number)
+      try {
+        const res = await api.listEvalConfigs({ year, month })
+        if (!cancelled) {
+          // 저장 등으로 이미 채워진 키는 stale 응답으로 덮지 않음
+          setResolvedEvalConfigsByMonth(prev => (
+            prev[key] ? prev : { ...prev, [key]: normalizeResolvedEvalConfig(res) }
+          ))
+        }
+      } catch {
+        if (!cancelled) {
+          setResolvedEvalConfigsByMonth(prev => (
+            prev[key] ? prev : { ...prev, [key]: normalizeResolvedEvalConfig({ year, month, items: [] }) }
+          ))
+        }
+      }
     })
-  }, [selectedMonth, is2026])
+    Promise.all(jobs)
+    return () => { cancelled = true }
+  }, [currentEvalKey, prevEvalKey, resolvedEvalConfigsByMonth])
+
+  useEffect(() => {
+    let cancelled = false
+    if (evalHistoryByYear[selectedYear]) return undefined
+    api.listEvalConfigHistory({ year: selectedYear })
+      .then((res) => {
+        if (!cancelled) setEvalHistoryByYear(prev => ({ ...prev, [selectedYear]: res.items || [] }))
+      })
+      .catch(() => {
+        if (!cancelled) setEvalHistoryByYear(prev => ({ ...prev, [selectedYear]: [] }))
+      })
+    return () => { cancelled = true }
+  }, [selectedYear, evalHistoryByYear])
+
+  useEffect(() => {
+    let cancelled = false
+    const targets = []
+    for (const year of [selectedYear, prevYear]) {
+      for (let month = 1; month <= 12; month += 1) {
+        targets.push(monthKey(year, month))
+      }
+    }
+    const jobs = targets.map(async (key) => {
+      const isCurrent = key === currentEvalKey || key === prevEvalKey
+      if (Object.prototype.hasOwnProperty.call(achievementsByMonth, key)) {
+        const cached = achievementsByMonth[key]
+        // 현재/전년동월은 빈 캐시도 재조회. 그 외는 데이터 있으면 유지
+        if (Array.isArray(cached) && cached.length > 0) return
+        if (!isCurrent && Array.isArray(cached)) return
+      }
+      const [year, month] = key.split('-').map(Number)
+      try {
+        const res = await api.listAchievements({ year, month })
+        if (!cancelled) {
+          setAchievementsByMonth(prev => {
+            const existing = prev[key]
+            const next = mapAchievementItems(res.items || [], year, month)
+            if (
+              Array.isArray(existing)
+              && existing.length === next.length
+              && existing.length === 0
+            ) return prev
+            return { ...prev, [key]: next }
+          })
+        }
+      } catch {
+        if (!cancelled) {
+          setAchievementsByMonth(prev => (
+            Object.prototype.hasOwnProperty.call(prev, key) ? prev : { ...prev, [key]: [] }
+          ))
+        }
+      }
+    })
+    Promise.all(jobs)
+    return () => { cancelled = true }
+  }, [selectedYear, prevYear, currentEvalKey, prevEvalKey, achievementsByMonth])
+
+  useEffect(() => {
+    let cancelled = false
+    const targets = []
+    for (const year of [selectedYear, prevYear]) {
+      for (let month = 1; month <= 12; month += 1) {
+        targets.push(monthKey(year, month))
+      }
+    }
+    const jobs = targets.map(async (key) => {
+      const isCurrent = key === currentEvalKey || key === prevEvalKey
+      if (Object.prototype.hasOwnProperty.call(groupScoresByMonth, key)) {
+        const cached = groupScoresByMonth[key]
+        if (Array.isArray(cached) && cached.length > 0) return
+        if (!isCurrent && Array.isArray(cached)) return
+      }
+      const [year, month] = key.split('-').map(Number)
+      try {
+        const res = await api.listGroupScores({ year, month })
+        if (!cancelled) {
+          setGroupScoresByMonth((prev) => {
+            const existing = prev[key]
+            const next = res.items || []
+            if (Array.isArray(existing) && existing.length === next.length && existing.length === 0) return prev
+            return { ...prev, [key]: next }
+          })
+        }
+      } catch {
+        if (!cancelled) {
+          setGroupScoresByMonth((prev) => (
+            Object.prototype.hasOwnProperty.call(prev, key) ? prev : { ...prev, [key]: [] }
+          ))
+        }
+      }
+    })
+    Promise.all(jobs)
+    return () => { cancelled = true }
+  }, [selectedYear, prevYear, currentEvalKey, prevEvalKey, groupScoresByMonth])
+
+  const handleRefreshFacts = async () => {
+    setFactsRefreshing(true)
+    setFactsMessage('')
+    try {
+      const result = await api.refreshFacts({ year: selectedYear, month: selectedMonth })
+      const res = await api.listAchievements({ year: selectedYear, month: selectedMonth })
+      setAchievementsByMonth(prev => ({
+        ...prev,
+        [currentEvalKey]: mapAchievementItems(res.items || [], selectedYear, selectedMonth),
+      }))
+      try {
+        const scores = await api.listGroupScores({ year: selectedYear, month: selectedMonth })
+        setGroupScoresByMonth(prev => ({ ...prev, [currentEvalKey]: scores.items || [] }))
+      } catch {
+        // ignore
+      }
+      const collect = Number(result.collect || 0)
+      const achievement = Number(result.achievement || 0)
+      if (achievement === 0 && collect > 0) {
+        setFactsMessage(`원천실적 ${collect}건 수신 · 평가배치 없어 달성률 산정 0건`)
+      } else if (achievement === 0 && collect === 0) {
+        setFactsMessage('동기화 완료 · 취합·달성률 모두 0건')
+      } else {
+        setFactsMessage(`실적 동기화 완료 (취합 ${collect} · 달성률 ${achievement})`)
+      }
+    } catch (e) {
+      setFactsMessage(e?.message || '실적 동기화 실패')
+    } finally {
+      setFactsRefreshing(false)
+    }
+  }
 
   const groupSummaries = useMemo(() => {
     return activeGroups.map(g => {
       const defs = kpiDefs.filter(k => k.group === g)
       const monthResults = activeResults.filter(r => r.group === g && r.month === selectedMonth && r.mgmtTool === 'KPI')
+      const scoreRow = scoreByGroupName[g]
 
       let weightedSum = 0, totalWeight = 0, over100 = 0, mid = 0, under80 = 0
       const catAchs = {}
 
       activeCats.forEach(cat => {
-        const catDefs = defs.filter(d => d.category === cat)
+        const catDefs = defs.filter(d => d.category === cat && String(d.contributionMode || d.contribution_mode || 'WEIGHT').toUpperCase() !== 'ADJUST')
         let cw = 0, cs = 0
         catDefs.forEach(def => {
           const r = monthResults.find(r => r.code === def.code)
           if (r && r.achievement != null) {
-            cs += r.achievement * def.weight; cw += def.weight
-            weightedSum += r.achievement * def.weight; totalWeight += def.weight
+            const w = Number(def.weight) || 0
+            if (w <= 0) return
+            cs += r.achievement * w; cw += w
+            weightedSum += r.achievement * w; totalWeight += w
             if (r.achievement >= 100) over100++
             else if (r.achievement >= 80) mid++
             else under80++
           }
         })
-        catAchs[cat] = cw > 0 ? Math.round(cs / cw * 10) / 10 : 0
+        catAchs[cat] = cw > 0 ? Math.round(cs / cw * 10) / 10 : null
       })
 
-      const wavg = totalWeight > 0 ? Math.round(weightedSum / totalWeight * 10) / 10 : 0
+      const fallback = totalWeight > 0 ? Math.round(weightedSum / totalWeight * 10) / 10 : 0
+      const ultimate = scoreRow?.ultimate_score
+      const wavg = ultimate != null && Number.isFinite(Number(ultimate))
+        ? Math.round(Number(ultimate) * 10) / 10
+        : fallback
 
-      return { name: g, kpiCount: defs.length, wavg, over100, mid, under80, catAchs }
+      return {
+        name: g,
+        kpiCount: defs.length,
+        wavg,
+        over100,
+        mid,
+        under80,
+        catAchs,
+        baseScore: scoreRow?.base_score ?? null,
+        adjustPoints: scoreRow?.adjust_points ?? 0,
+        adjustPp: scoreRow?.adjust_pp ?? 0,
+        groupFinalScore: scoreRow?.group_final_score ?? null,
+        ultimateScore: scoreRow?.ultimate_score ?? null,
+      }
     })
-  }, [selectedMonth, kpiDefs, activeGroups, activeCats, activeResults])
+  }, [selectedMonth, kpiDefs, activeGroups, activeCats, activeResults, scoreByGroupName])
 
   const handleGroupClick = (groupName) => {
+    if (!activeGroups.includes(groupName)) return
     setSelectedGroup(groupName)
     setView('detail')
     setDetailTab('summary')
+  }
+
+  /** Agenda는 그룹과 독립 — 그룹 선택 해제 후 테마 지표만 표시 */
+  const handleAgendaSelect = (tabId) => {
+    setSelectedGroup(null)
+    setView('detail')
+    setDetailTab(`custom:${tabId}`)
   }
 
   const handleReportClick = (groupName) => {
@@ -286,56 +891,91 @@ export default function App() {
     setView('report')
   }
 
-  const handleBankKpiOpen = () => {
-    if (!selectedGroup) setSelectedGroup(GROUPS[0] ?? null)
-    setDetailTab('bank')
-    setView('detail')
+  const handleViewChange = (nextView) => {
+    if ((nextView === 'codebook' || nextView === 'evalConfig' || nextView === 'users' || nextView === 'facts') && !canAccessAdminMenu(currentUser)) {
+      applyRoleHome(currentUser)
+      return
+    }
+    if (nextView === 'deptFacts' && !canAccessDeptFactEntry(currentUser)) {
+      applyRoleHome(currentUser)
+      return
+    }
+    if ((nextView === 'dashboard' || nextView === 'agent' || nextView === 'anomaly') && !canAccessTopMenu(currentUser)) {
+      applyRoleHome(currentUser)
+      return
+    }
+    if (nextView === 'home' && canAccessTopMenu(currentUser)) {
+      applyRoleHome(currentUser)
+      return
+    }
+    setView(nextView)
+  }
+
+  const handleLogout = () => {
+    logout()
+    setCurrentUser(null)
+    setView('home')
+    setSelectedGroup(null)
   }
 
   const handleSaveCustomTab = (payload) => {
+    if (!canAccessAdminMenu(currentUser)) return { ok: false, reason: 'forbidden' }
     const title = (payload?.title ?? '').trim()
     const metricCodes = Array.isArray(payload?.metricCodes) ? payload.metricCodes : []
-    const pinToBottom = Boolean(payload?.pinToBottom)
     const editId = payload?.id ?? null
     if (!title || metricCodes.length === 0) return { ok: false, reason: 'invalid' }
     if (customTabs.some(t => t.title === title && t.id !== editId)) return { ok: false, reason: 'duplicate_title' }
     if (editId) {
-      setCustomTabs(prev => prev.map(t => t.id === editId ? { ...t, title, metricCodes, pinToBottom } : t))
+      setCustomTabs(prev => prev.map(t => t.id === editId ? { ...t, title, metricCodes } : t))
+      setSelectedGroup(null)
+      setView('detail')
       setDetailTab(`custom:${editId}`)
       return { ok: true }
     }
     if (customTabs.length >= 8) return { ok: false, reason: 'limit' }
     const id = `tab_${Date.now()}`
-    setCustomTabs(prev => [...prev, { id, title, metricCodes, pinToBottom }])
+    setCustomTabs(prev => [...prev, { id, title, metricCodes }])
+    setSelectedGroup(null)
+    setView('detail')
     setDetailTab(`custom:${id}`)
     return { ok: true }
   }
 
   const handleDeleteCustomTab = (id) => {
+    if (!canAccessAdminMenu(currentUser)) return
     setCustomTabs(prev => prev.filter(t => t.id !== id))
-    if (detailTab === `custom:${id}`) setDetailTab('summary')
+    if (detailTab === `custom:${id}`) {
+      setDetailTab('summary')
+      if (!selectedGroup && activeGroups[0]) {
+        setSelectedGroup(activeGroups[0])
+      }
+    }
   }
 
-  const selectedCustomTab = detailTab.startsWith('custom:')
-    ? customTabs.find(t => t.id === detailTab.replace('custom:', '')) ?? null
-    : null
-
   const defaultMaster = useMemo(() => buildMasterFromCodebook(CODEBOOK, KPI_DEFINITIONS), [])
-  const defaultEvalConfigs = useMemo(() => ({
-    2026: buildEvalConfig(KPI_DEFINITIONS, defaultMaster, 2026),
-    2025: buildEvalConfig(PREV_KPI_DEFINITIONS, defaultMaster, 2025),
-  }), [defaultMaster])
+  const buildDefaultEvalRows = useMemo(() => {
+    return (year, month) => buildEvalConfig(KPI_DEFINITIONS, evalCodeCatalog, year, month)
+  }, [evalCodeCatalog])
+
+  if (!currentUser) {
+    return <LoginView onLogin={handleLogin} />
+  }
+
+  const deptScopeHint = currentUser.role === ROLES.DEPT_ADMIN
+    ? `${(currentUser.allowedDepartments?.length ? currentUser.allowedDepartments.join(', ') : currentUser.department) || '배정부서'} · 부서 스코프`
+    : null
+  const agendaTitle = selectedCustomTab?.title || null
 
   return (
     <div className="flex h-screen overflow-hidden">
       <Sidebar
-        groups={GROUPS}
+        groups={activeGroups}
         view={view}
         selectedGroup={selectedGroup}
         selectedYear={selectedYear}
         detailTab={detailTab}
         customTabs={customTabs}
-        detailMetricOptions={activeDefs.filter(d => d.mgmtTool === 'KPI').map(def => ({
+        detailMetricOptions={scopedDefs.filter(d => d.mgmtTool === 'KPI').map(def => ({
           code: def.code,
           name: def.name,
           label: def.label26 || def.name,
@@ -343,81 +983,261 @@ export default function App() {
           group: def.group,
           weight: def.weight,
         }))}
-        onViewChange={setView}
+        onViewChange={handleViewChange}
         onGroupSelect={handleGroupClick}
-        onDetailTabChange={setDetailTab}
+        onAgendaSelect={handleAgendaSelect}
         onSaveCustomTab={handleSaveCustomTab}
         onDeleteCustomTab={handleDeleteCustomTab}
-        onBankKpiOpen={handleBankKpiOpen}
+        currentUser={currentUser}
+        onLogout={handleLogout}
       />
       <div className="flex-1 flex flex-col overflow-hidden">
         <Header
           view={view}
           selectedGroup={selectedGroup}
+          agendaTitle={agendaTitle}
           selectedMonth={selectedMonth}
           selectedYear={selectedYear}
           toolFilter={toolFilter}
           onMonthChange={setSelectedMonth}
           onYearChange={setSelectedYear}
+          yearOptions={yearOptions}
           onToolFilterChange={setToolFilter}
-          onBack={() =>
-            setView(view === 'report' ? 'detail' : 'dashboard')}
+          onBack={() => {
+            if (view === 'report') {
+              setView('detail')
+              return
+            }
+            applyRoleHome(currentUser)
+          }}
           onReportClick={() => handleReportClick()}
+          currentUser={currentUser}
+          onRefreshFacts={handleRefreshFacts}
+          factsRefreshing={factsRefreshing}
+          factsMessage={factsMessage}
         />
-        <main className="flex-1 overflow-y-auto p-6 bg-slate-50">
-          {view === 'codebook' && (
-            <CodebookAdminView
-              indicatorMaster={indicatorMaster}
-              meta={CODEBOOK_META}
-              structure={structureRows}
-              evalConfigs={evalConfigs}
-              onMasterChange={setIndicatorMaster}
-              onStructureChange={setStructureRows}
-              onEvalConfigChange={setEvalConfigs}
-              defaultMaster={defaultMaster}
-              defaultEvalConfigs={defaultEvalConfigs}
-              defaultStructure={NF_STRUCTURE}
+        <main className={`flex-1 overflow-y-auto bg-transparent ${view === 'home' ? 'p-0' : 'p-6'}`}>
+          {view === 'codebook' && canAccessAdminMenu(currentUser) && (
+            <CodebookAdminView />
+          )}
+          {view === 'evalConfig' && canAccessAdminMenu(currentUser) && (
+            <EvalConfigView
+              yearOptions={yearOptions}
+              selectedYear={selectedYear}
+              selectedMonth={selectedMonth}
+              onYearChange={setSelectedYear}
+              onMonthChange={setSelectedMonth}
+              resolvedMeta={currentResolvedEval}
+              evalRows={currentResolvedEval.items || []}
+              historyRows={evalHistoryByYear[selectedYear] || []}
+              templateUrl={api.getEvalTemplateUrl()}
+              exportUrl={selectedYear ? api.getEvalExportUrl({ year: selectedYear, month: selectedMonth }) : ''}
+              codeCatalog={evalCodeCatalog}
+              onRefreshCodeCatalog={reloadEvalCodeCatalog}
+              ownerGroupRows={evalOwnerGroupRows}
+              onSaveEvalSet={async ({ effectiveMonth, items, changeReason }) => {
+                const payloadItems = (items || []).map((row, idx) => {
+                  const sortOrder = Number(row.sortOrder ?? row.sort_order)
+                  const safeSort = Number.isFinite(sortOrder) ? sortOrder : idx
+                  return {
+                    ...row,
+                    indicator_code: row.indicatorCode || row.indicator_code,
+                    group_code: row.groupCode || row.group_code,
+                    mgmt_tool: row.mgmtTool || row.mgmt_tool,
+                    eval_category_lv1: row.evalCategoryLv1 || row.eval_category_lv1,
+                    eval_category_lv2: row.evalCategoryLv2 || row.eval_category_lv2,
+                    eval_category_lv3: row.evalCategoryLv3 || row.eval_category_lv3,
+                    is_core: row.isCore ? 'Y' : 'N',
+                    annual_target: row.annualTarget ?? row.annual_target,
+                    baseline_actual: row.baselineActual ?? row.baseline_actual,
+                    achievement_mode: row.achievementMode || row.achievement_mode,
+                    goal_direction: row.goalDirection || row.goal_direction,
+                    custom_achievement_expr: row.customAchievementExpr || row.custom_achievement_expr,
+                    custom_monthly_targets_json: row.customMonthlyTargets || row.custom_monthly_targets_json,
+                    filters_json: row.filters || row.filters_json,
+                    data_source: row.dataSource || row.data_source,
+                    h1_target: row.h1Target ?? row.h1_target,
+                    h2_target: row.h2Target ?? row.h2_target,
+                    score_rule: row.scoreRule || row.score_rule,
+                    penalty_rule: row.penaltyRule || row.penalty_rule,
+                    adj_band: row.adjBand || row.adj_band || '',
+                    cap_max: row.capMax ?? row.cap_max,
+                    cap_min: row.capMin ?? row.cap_min,
+                    formula_id: row.formulaId ?? row.formula_id,
+                    contribution_mode: String(row.contributionMode || row.contribution_mode || 'WEIGHT').toUpperCase() === 'ADJUST' ? 'ADJUST' : 'WEIGHT',
+                    weight: String(row.contributionMode || row.contribution_mode || 'WEIGHT').toUpperCase() === 'ADJUST'
+                      ? 0
+                      : (row.weight ?? 0),
+                    sortOrder: safeSort,
+                    sort_order: safeSort,
+                  }
+                })
+                const saved = await api.saveEvalConfigSet({ year: selectedYear, effectiveMonth, items: payloadItems, changeReason })
+                const normalized = normalizeResolvedEvalConfig(saved)
+                // 조회월 기준으로 다시 읽어 상속/적용월 차이를 반영 (저장 응답은 effectiveMonth 기준)
+                let viewed = normalized
+                if (selectedMonth !== effectiveMonth) {
+                  try {
+                    const res = await api.listEvalConfigs({ year: selectedYear, month: selectedMonth })
+                    viewed = normalizeResolvedEvalConfig(res)
+                  } catch {
+                    viewed = selectedMonth >= effectiveMonth ? normalized : (resolvedEvalConfigsByMonth[currentEvalKey] || normalized)
+                  }
+                }
+                setResolvedEvalConfigsByMonth(prev => {
+                  const next = { ...prev }
+                  for (let m = Math.min(effectiveMonth, selectedMonth); m <= 12; m += 1) {
+                    delete next[monthKey(selectedYear, m)]
+                  }
+                  next[currentEvalKey] = viewed
+                  if (selectedMonth !== effectiveMonth && selectedMonth >= effectiveMonth) {
+                    next[monthKey(selectedYear, effectiveMonth)] = normalized
+                  }
+                  return next
+                })
+                const history = await api.listEvalConfigHistory({ year: selectedYear })
+                setEvalHistoryByYear(prev => ({ ...prev, [selectedYear]: history.items || [] }))
+                await reloadEvalYears()
+              }}
+              onSeedDefaults={async () => {
+                const items = buildDefaultEvalRows(selectedYear, selectedMonth)
+                const saved = await api.seedEvalDefaults({ year: selectedYear, month: selectedMonth, items, changeReason: '기본값 생성' })
+                const normalized = normalizeResolvedEvalConfig(saved)
+                setResolvedEvalConfigsByMonth(prev => ({ ...prev, [currentEvalKey]: normalized }))
+                const history = await api.listEvalConfigHistory({ year: selectedYear })
+                setEvalHistoryByYear(prev => ({ ...prev, [selectedYear]: history.items || [] }))
+                await reloadEvalYears()
+              }}
+              onImportEvalSet={async (file) => {
+                const saved = await api.importEvalConfigSet({ year: selectedYear, month: selectedMonth, file })
+                const normalized = normalizeResolvedEvalConfig(saved)
+                setResolvedEvalConfigsByMonth(prev => ({ ...prev, [currentEvalKey]: normalized }))
+                const history = await api.listEvalConfigHistory({ year: selectedYear })
+                setEvalHistoryByYear(prev => ({ ...prev, [selectedYear]: history.items || [] }))
+                await reloadEvalYears()
+              }}
+              onDeleteEvalSet={async (row) => {
+                const deleted = await api.deleteEvalConfigSet({ planSetId: row.plan_set_id })
+                const effectiveMonth = Number(deleted.effective_from_month ?? row.effective_from_month ?? selectedMonth)
+                setResolvedEvalConfigsByMonth(prev => {
+                  const next = { ...prev }
+                  for (let m = effectiveMonth; m <= 12; m += 1) {
+                    delete next[monthKey(selectedYear, m)]
+                  }
+                  return next
+                })
+                const [history, currentRes, prevRes] = await Promise.all([
+                  api.listEvalConfigHistory({ year: selectedYear }),
+                  api.listEvalConfigs({ year: selectedYear, month: selectedMonth }),
+                  api.listEvalConfigs({ year: selectedYear, month: selectedMonth > 1 ? selectedMonth - 1 : selectedMonth }),
+                ])
+                setEvalHistoryByYear(prev => ({ ...prev, [selectedYear]: history.items || [] }))
+                setResolvedEvalConfigsByMonth(prev => ({
+                  ...prev,
+                  [currentEvalKey]: normalizeResolvedEvalConfig(currentRes),
+                  [prevEvalKey]: normalizeResolvedEvalConfig(prevRes),
+                }))
+                await reloadEvalYears()
+              }}
             />
           )}
-          {view === 'dashboard' && (
+          {view === 'facts' && canAccessAdminMenu(currentUser) && (
+            <FactsAdminView
+              selectedYear={selectedYear}
+              selectedMonth={selectedMonth}
+              yearOptions={yearOptions}
+              onYearChange={setSelectedYear}
+              onMonthChange={setSelectedMonth}
+              groups={evalOwnerGroupRows}
+            />
+          )}
+          {view === 'deptFacts' && canAccessDeptFactEntry(currentUser) && (
+            <DeptFactEntryView
+              currentUser={currentUser}
+              selectedYear={selectedYear}
+              selectedMonth={selectedMonth}
+              yearOptions={yearOptions}
+              onYearChange={setSelectedYear}
+              onMonthChange={setSelectedMonth}
+            />
+          )}
+          {view === 'users' && canAccessAdminMenu(currentUser) && (
+            <UserAdminView groups={masterGroupNames} />
+          )}
+          {view === 'home' && !canAccessTopMenu(currentUser) && (
+            <HomeWelcomeView
+              currentUser={currentUser}
+              groups={activeGroups}
+              selectedYear={selectedYear}
+              selectedMonth={selectedMonth}
+              onGroupClick={handleGroupClick}
+            />
+          )}
+          {view === 'dashboard' && canAccessDashboard(currentUser) && (
             <DashboardView
               groupSummaries={groupSummaries}
-              bankKpiSummary={bankKpiSummary}
               categories={activeCats}
               definitions={kpiDefs}
-              results={activeResults.filter(r => r.mgmtTool === 'KPI')}
+              results={dashboardResults}
+              prevDefinitions={dashboardPrevDefs}
+              prevResults={dashboardPrevResults}
+              bankScore={bankGroupScore}
+              prevBankScore={prevBankGroupScore}
               selectedMonth={selectedMonth}
               selectedYear={selectedYear}
               onGroupClick={handleGroupClick}
             />
           )}
+          {view === 'agent' && canAccessTopMenu(currentUser) && (
+            <AgentQueryView
+              definitions={scopedDefs}
+              results={activeResults}
+              groups={activeGroups}
+              categories={activeCats}
+              selectedMonth={selectedMonth}
+              selectedYear={selectedYear}
+              currentUser={currentUser}
+            />
+          )}
+          {view === 'anomaly' && canAccessTopMenu(currentUser) && (
+            <AnomalyCenterView
+              definitions={scopedDefs}
+              results={activeResults}
+              groups={activeGroups}
+              categories={activeCats}
+              selectedMonth={selectedMonth}
+              selectedYear={selectedYear}
+            />
+          )}
           {view === 'detail' && (
             <GroupDetailView
-              group={selectedGroup}
-              categories={activeCats}
+              group={isAgendaMode ? null : selectedGroup}
+              categories={detailCategories}
               definitions={detailDefinitions}
               results={detailResults}
               selectedMonth={selectedMonth}
               selectedYear={selectedYear}
               toolFilter={toolFilter}
               onReportClick={() => handleReportClick()}
-              prevDefinitions={PREV_KPI_DEFINITIONS}
-              prevResults={PREV_KPI_RESULTS}
-              groupMapping2025={GROUP_MAPPING_2025}
-              bankDefinitions={BANK_DEFINITIONS}
-              bankResults={BANK_RESULTS}
+              prevDefinitions={prevActiveDefs}
+              prevResults={resolvedPrevResults}
               detailTab={detailTab}
               selectedCustomTab={selectedCustomTab}
               codebook={indicatorMaster}
+              scopeHint={isAgendaMode ? null : deptScopeHint}
+              groupScore={isAgendaMode ? null : (scoreByGroupName[selectedGroup] || null)}
+              prevGroupScore={isAgendaMode ? null : (momScoreByGroupName[selectedGroup] || null)}
+              yearGroupScores={isAgendaMode ? [] : yearGroupScoresForSelected}
             />
           )}
           {view === 'report' && (
             <ReportView
               group={selectedGroup}
-              categories={activeCats}
-              definitions={activeDefs.filter(k => k.group === selectedGroup)}
-              results={activeResults.filter(r => r.group === selectedGroup)}
+              categories={detailCategories}
+              definitions={scopedDefs.filter(k => k.group === selectedGroup)}
+              results={detailResults}
               selectedMonth={selectedMonth}
+              selectedYear={selectedYear}
             />
           )}
         </main>

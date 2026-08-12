@@ -13,13 +13,33 @@
   --color-navy-800: #264381;
   --color-navy-900: #19316f;
   --color-navy-950: #0f1f4a;
+  --color-bank-blue: #0b5cff;
+  --color-bank-blue-600: #0a4ed8;
+  --color-bank-navy: #071b4d;
 }
 
 body {
   font-family: 'Noto Sans KR', sans-serif;
-  background-color: #f1f5f9;
+  background: #f4f6f9;
+  color: #0f172a;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
-::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar { width: 7px; height: 7px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 999px; }
+::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+}
+
+:where(button, a, input, select, textarea):focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
+}

@@ -11,10 +11,22 @@ __pycache__/
 .venv/
 venv/
 
+# SQLite app DB (recreate via import)
+server/data/
+*.sqlite
+*.sqlite3
+# 배포용 데모 DB(압축)는 커밋
+!server/data/
+!server/data/kpi.demo.sqlite.gz
+server/data/*
+!server/data/kpi.demo.sqlite.gz
+
 # Env / secrets
 .env
 .env.*
 !.env.example
+!system/.env.production.example
+!.env.production.example
 
 # OS / IDE
 .DS_Store

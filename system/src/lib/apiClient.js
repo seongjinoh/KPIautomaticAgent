@@ -1,0 +1,314 @@
+const API_BASE = (import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8787').replace(/\/$/, '')
+
+async function request(path, options = {}) {
+  const res = await fetch(`${API_BASE}${path}`, {
+    ...options,
+    headers: {
+      ...(options.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }),
+      ...(options.headers || {}),
+    },
+  })
+  let data = null
+  const text = await res.text()
+  try {
+    data = text ? JSON.parse(text) : null
+  } catch {
+    data = { raw: text }
+  }
+  if (!res.ok) {
+    const err = new Error(data?.message || data?.error || `HTTP ${res.status}`)
+    err.status = res.status
+    err.data = data
+    throw err
+  }
+  return data
+}
+
+export const api = {
+  base: API_BASE,
+  health: () => request('/api/health'),
+  listLv1: () => request('/api/codes/lv1'),
+  listLv2: (lv1) => request(`/api/codes/lv2${lv1 ? `?lv1=${encodeURIComponent(lv1)}` : ''}`),
+  listGroups: (params = {}) => {
+    const q = new URLSearchParams()
+    if (params.evalOnly) q.set('eval_only', '1')
+    const qs = q.toString()
+    return request(`/api/owner-groups${qs ? `?${qs}` : ''}`)
+  },
+  listCommon: () => request('/api/indicators/common'),
+  nextLv3: () => request('/api/indicators/common/next-lv3'),
+  listCodes: (params = {}) => {
+    const q = new URLSearchParams()
+    if (params.group) q.set('group', params.group)
+    if (params.common) q.set('common', params.common)
+    const qs = q.toString()
+    return request(`/api/indicators/codes${qs ? `?${qs}` : ''}`)
+  },
+  previewCode: (body) => request('/api/indicators/preview-code', { method: 'POST', body: JSON.stringify(body) }),
+  createLv1: (body) => request('/api/codes/lv1', { method: 'POST', body: JSON.stringify(body) }),
+  updateLv1: (code, body) => request(`/api/codes/lv1/${encodeURIComponent(code)}`, { method: 'PUT', body: JSON.stringify(body) }),
+  deleteLv1: (code) => request(`/api/codes/lv1/${encodeURIComponent(code)}`, { method: 'DELETE' }),
+  nextLv2: () => request('/api/codes/lv2/next'),
+  createLv2: (body) => request('/api/codes/lv2', { method: 'POST', body: JSON.stringify(body) }),
+  updateLv2: (code, body) => request(`/api/codes/lv2/${encodeURIComponent(code)}`, { method: 'PUT', body: JSON.stringify(body) }),
+  deleteLv2: (code) => request(`/api/codes/lv2/${encodeURIComponent(code)}`, { method: 'DELETE' }),
+  createGroup: (body) => request('/api/owner-groups', { method: 'POST', body: JSON.stringify(body) }),
+  updateGroup: (code, body) => request(`/api/owner-groups/${encodeURIComponent(code)}`, { method: 'PUT', body: JSON.stringify(body) }),
+  deleteGroup: (code) => request(`/api/owner-groups/${encodeURIComponent(code)}`, { method: 'DELETE' }),
+  createCommon: (body) => request('/api/indicators/common', { method: 'POST', body: JSON.stringify(body) }),
+  updateCommon: (code, body) => request(`/api/indicators/common/${encodeURIComponent(code)}`, { method: 'PUT', body: JSON.stringify(body) }),
+  deleteCommon: (code) => request(`/api/indicators/common/${encodeURIComponent(code)}`, { method: 'DELETE' }),
+  createCode: (body) => request('/api/indicators/codes', { method: 'POST', body: JSON.stringify(body) }),
+  updateCode: (code, body) => request(`/api/indicators/codes/${encodeURIComponent(code)}`, { method: 'PUT', body: JSON.stringify(body) }),
+  deleteCode: (code) => request(`/api/indicators/codes/${encodeURIComponent(code)}`, { method: 'DELETE' }),
+  listEvalConfigs: ({ year, month, group } = {}) => {
+    const q = new URLSearchParams()
+    if (year != null) q.set('year', year)
+    if (month != null) q.set('month', month)
+    if (group) q.set('group', group)
+    return request(`/api/eval-configs?${q.toString()}`)
+  },
+  saveEvalConfigs: ({ year, month, items }) =>
+    request(`/api/eval-configs?year=${encodeURIComponent(year)}&month=${encodeURIComponent(month)}`, {
+      method: 'PUT',
+      body: JSON.stringify({ items }),
+    }),
+  saveEvalConfigSet: ({ year, effectiveMonth, items, changeReason }) =>
+    request(`/api/eval-configs?year=${encodeURIComponent(year)}&month=${encodeURIComponent(effectiveMonth)}`, {
+      method: 'PUT',
+      body: JSON.stringify({ items, changeReason }),
+    }),
+  deleteEvalConfigSet: ({ planSetId }) =>
+    request(`/api/eval-configs?planSetId=${encodeURIComponent(planSetId)}`, {
+      method: 'DELETE',
+    }),
+  listEvalConfigHistory: ({ year }) => request(`/api/eval-configs/history?year=${encodeURIComponent(year)}`),
+  listEvalYears: () => request('/api/eval-configs/years'),
+  seedEvalDefaults: (body) => request('/api/eval-configs/seed-defaults', { method: 'POST', body: JSON.stringify(body) }),
+  getEvalTemplateUrl: () => `${API_BASE}/api/eval-configs/template`,
+  getEvalExportUrl: ({ year, month } = {}) =>
+    `${API_BASE}/api/eval-configs/export?year=${encodeURIComponent(year)}&month=${encodeURIComponent(month)}`,
+  importEvalConfigSet: async ({ year, month, file }) => {
+    const form = new FormData()
+    form.append('file', file)
+    return request(`/api/eval-configs/import?year=${encodeURIComponent(year)}&month=${encodeURIComponent(month)}`, {
+      method: 'POST',
+      body: form,
+    })
+  },
+  importCodes: async (file) => {
+    if (!file) {
+      return request('/api/codes/import', { method: 'POST', body: '{}' })
+    }
+    const form = new FormData()
+    form.append('file', file)
+    return request('/api/codes/import', { method: 'POST', body: form })
+  },
+  getCodesExportUrl: () => `${API_BASE}/api/codes/export`,
+  refreshFacts: ({ year, month }) =>
+    request(`/api/facts/refresh?year=${encodeURIComponent(year)}&month=${encodeURIComponent(month)}`, {
+      method: 'POST',
+      body: '{}',
+    }),
+  listAchievements: ({ year, month, group } = {}) => {
+    const q = new URLSearchParams()
+    if (year != null) q.set('year', year)
+    if (month != null) q.set('month', month)
+    if (group) q.set('group', group)
+    return request(`/api/achievements?${q.toString()}`)
+  },
+  listGroupScores: ({ year, month } = {}) => {
+    const q = new URLSearchParams()
+    if (year != null) q.set('year', year)
+    if (month != null) q.set('month', month)
+    return request(`/api/group-scores?${q.toString()}`)
+  },
+  recomputeGroupScores: ({ year, month } = {}) =>
+    request(`/api/group-scores/recompute?year=${encodeURIComponent(year)}&month=${encodeURIComponent(month)}`, {
+      method: 'POST',
+      body: '{}',
+    }),
+  listScoreRollups: ({ year, month } = {}) => {
+    const q = new URLSearchParams()
+    if (year != null) q.set('year', year)
+    if (month != null) q.set('month', month)
+    return request(`/api/score-rollups?${q.toString()}`)
+  },
+  saveScoreRollups: ({ year, month, rules, changeReason } = {}) =>
+    request(`/api/score-rollups?year=${encodeURIComponent(year)}&month=${encodeURIComponent(month)}`, {
+      method: 'POST',
+      body: JSON.stringify({ rules, changeReason: changeReason || '' }),
+    }),
+  listFactCollect: ({ year, month, ym } = {}) => {
+    const q = new URLSearchParams()
+    if (ym) q.set('ym', ym)
+    if (year != null) q.set('year', year)
+    if (month != null) q.set('month', month)
+    return request(`/api/facts/collect?${q.toString()}`)
+  },
+  listFactCalc: ({ year, month, group, ym } = {}) => {
+    const q = new URLSearchParams()
+    if (ym) q.set('ym', ym)
+    if (year != null) q.set('year', year)
+    if (month != null) q.set('month', month)
+    if (group) q.set('group', group)
+    return request(`/api/facts/calc?${q.toString()}`)
+  },
+  listFactFormulas: () => request('/api/fact-formulas'),
+  createFactFormula: (body) => request('/api/fact-formulas', { method: 'POST', body: JSON.stringify(body) }),
+  updateFactFormula: (id, body) => request(`/api/fact-formulas/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(body) }),
+  deleteFactFormula: (id) => request(`/api/fact-formulas/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  previewFactFormula: ({ year, month, group, ...body } = {}) => {
+    const q = new URLSearchParams()
+    if (year != null) q.set('year', year)
+    if (month != null) q.set('month', month)
+    if (group) q.set('group', group)
+    return request(`/api/fact-formulas/preview?${q.toString()}`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    })
+  },
+  runBankExport: ({ year, month, triggeredBy = 'api' } = {}) =>
+    request(`/api/bank-export?year=${encodeURIComponent(year)}&month=${encodeURIComponent(month)}`, {
+      method: 'POST',
+      body: JSON.stringify({ triggered_by: triggeredBy }),
+    }),
+  listBankExportHistory: ({ year } = {}) => {
+    const q = new URLSearchParams()
+    if (year != null) q.set('year', year)
+    return request(`/api/bank-export/history?${q.toString()}`)
+  },
+  listBankExportItems: (batchId) =>
+    request(`/api/bank-export/${encodeURIComponent(batchId)}/items`),
+  getFactUploadTemplateUrl: () => `${API_BASE}/api/facts/upload-template`,
+  uploadFactsPreview: async (file) => {
+    if (!file) throw new Error('엑셀 파일이 필요합니다')
+    const form = new FormData()
+    form.append('file', file)
+    return request('/api/facts/upload', { method: 'POST', body: form })
+  },
+  /** @deprecated use uploadFactsPreview + confirmFactUpload */
+  uploadFacts: async (file) => {
+    if (!file) throw new Error('엑셀 파일이 필요합니다')
+    const form = new FormData()
+    form.append('file', file)
+    return request('/api/facts/upload', { method: 'POST', body: form })
+  },
+  confirmFactUpload: (batchId, { actedBy = 'ui' } = {}) =>
+    request(`/api/facts/uploads/${encodeURIComponent(batchId)}/confirm`, {
+      method: 'POST',
+      body: JSON.stringify({ acted_by: actedBy }),
+    }),
+  cancelFactUpload: (batchId, { actedBy = 'ui' } = {}) =>
+    request(`/api/facts/uploads/${encodeURIComponent(batchId)}/cancel`, {
+      method: 'POST',
+      body: JSON.stringify({ acted_by: actedBy }),
+    }),
+  listFactUploads: ({ limit = 50 } = {}) => {
+    const q = new URLSearchParams()
+    if (limit != null) q.set('limit', limit)
+    return request(`/api/facts/uploads?${q.toString()}`)
+  },
+  listFactUploadItems: (batchId) =>
+    request(`/api/facts/uploads/${encodeURIComponent(batchId)}/items`),
+  listFactUploadLogs: (batchId) =>
+    request(`/api/facts/uploads/${encodeURIComponent(batchId)}/logs`),
+  exportPendingFactUploads: ({ triggeredBy = 'ui' } = {}) =>
+    request('/api/facts/uploads/export-pending', {
+      method: 'POST',
+      body: JSON.stringify({ triggered_by: triggeredBy }),
+    }),
+  listDeptFactDepts: ({ year, month } = {}) => {
+    const q = new URLSearchParams()
+    if (year != null) q.set('year', year)
+    if (month != null) q.set('month', month)
+    return request(`/api/facts/dept-entry/depts?${q.toString()}`)
+  },
+  getFactPeriodStatus: ({ year, month } = {}) => {
+    const q = new URLSearchParams()
+    if (year != null) q.set('year', year)
+    if (month != null) q.set('month', month)
+    return request(`/api/facts/period-status?${q.toString()}`)
+  },
+  listDeptFactEntries: ({ year, month, dept, group, scope } = {}) => {
+    const q = new URLSearchParams()
+    if (year != null) q.set('year', year)
+    if (month != null) q.set('month', month)
+    if (scope) q.set('scope', scope)
+    if (dept) q.set('dept', dept)
+    if (group) q.set('group', group)
+    return request(`/api/facts/dept-entry?${q.toString()}`)
+  },
+  saveDeptFactEntries: ({
+    year, month, dept, group, scope, updates, actedBy = 'ui', actorRole = '',
+  } = {}) => {
+    const q = new URLSearchParams()
+    if (year != null) q.set('year', year)
+    if (month != null) q.set('month', month)
+    if (scope) q.set('scope', scope)
+    if (dept) q.set('dept', dept)
+    if (group) q.set('group', group)
+    return request(`/api/facts/dept-entry?${q.toString()}`, {
+      method: 'POST',
+      body: JSON.stringify({
+        updates,
+        acted_by: actedBy,
+        actor_role: actorRole,
+        dept,
+        group_code: group,
+        scope,
+        scope_all: scope === 'all',
+      }),
+    })
+  },
+  confirmGroupFacts: ({ year, month, group, actedBy = 'ui', note = '' } = {}) =>
+    request('/api/facts/group-confirm', {
+      method: 'POST',
+      body: JSON.stringify({
+        year, month, group_code: group, acted_by: actedBy, note,
+      }),
+    }),
+  revokeGroupFacts: ({ year, month, group, actedBy = 'ui', note = '' } = {}) =>
+    request('/api/facts/group-confirm/revoke', {
+      method: 'POST',
+      body: JSON.stringify({
+        year, month, group_code: group, acted_by: actedBy, note,
+      }),
+    }),
+  freezeFactPeriod: ({ year, month, actedBy = 'ui', note = '', requireAllConfirmed = false } = {}) =>
+    request('/api/facts/period/freeze', {
+      method: 'POST',
+      body: JSON.stringify({
+        year, month, acted_by: actedBy, note, require_all_confirmed: requireAllConfirmed,
+      }),
+    }),
+  unfreezeFactPeriod: ({ year, month, actedBy = 'ui', note = '' } = {}) =>
+    request('/api/facts/period/unfreeze', {
+      method: 'POST',
+      body: JSON.stringify({ year, month, acted_by: actedBy, note }),
+    }),
+  getDeptFactExportUrl: ({ year, month, dept, group, scope } = {}) => {
+    const q = new URLSearchParams()
+    if (year != null) q.set('year', year)
+    if (month != null) q.set('month', month)
+    if (scope) q.set('scope', scope)
+    if (dept) q.set('dept', dept)
+    if (group) q.set('group', group)
+    return `${API_BASE}/api/facts/dept-entry/export?${q.toString()}`
+  },
+  importDeptFactEntries: async (file, {
+    year, month, dept, group, scope, actorRole = '',
+  } = {}) => {
+    if (!file) throw new Error('엑셀 파일이 필요합니다')
+    const q = new URLSearchParams()
+    if (year != null) q.set('year', year)
+    if (month != null) q.set('month', month)
+    if (scope) q.set('scope', scope)
+    if (dept) q.set('dept', dept)
+    if (group) q.set('group', group)
+    if (actorRole) q.set('actor_role', actorRole)
+    const form = new FormData()
+    form.append('file', file)
+    return request(`/api/facts/dept-entry/import?${q.toString()}`, { method: 'POST', body: form })
+  },
+}

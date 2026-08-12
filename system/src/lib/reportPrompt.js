@@ -1,139 +1,269 @@
 /**
- * 그룹별 KPI 데이터를 기반으로 LLM 보고서 생성 프롬프트를 구성한다.
- * 평가 관점: L1~L3 카테고리 + 26년 레이블(관리용 지표명은 참고로 병기)
+ * 그룹별 KPI → 현업형 실적 보고서 프롬프트.
+ * 출력: 종합달성률 → Lv2 단위 실적/달성률 → Lv2당 분석 2줄(전월대비/부진원인)
  */
 import { evalLabel } from './kpiDisplay'
 
-function catPath(def) {
-  return [def.category, def.categoryL2, def.categoryL3].filter(Boolean).join(' > ')
+const POOR_THRESHOLD = 70 // 부진 (대시보드 상태와 동일)
+const NOTABLE_MOM_DROP = -10 // 전월비 급감 기준 (%p)
+const NOTABLE_MOM_SPIKE = 15 // 전월비 급등 (특이 언급용)
+
+function fmtNum(value) {
+  const n = Number(value)
+  if (!Number.isFinite(n)) return '—'
+  return n.toLocaleString('ko-KR')
 }
 
-export function buildReportPrompt({ group, categories, kpiDefs, refDefs, results, selectedMonth }) {
+function fmtAch(value) {
+  const n = Number(value)
+  if (!Number.isFinite(n)) return '—'
+  return `${n.toFixed(2)}%`
+}
+
+function fmtMom(diff) {
+  const n = Number(diff)
+  if (!Number.isFinite(n)) return '—'
+  if (n === 0) return '0.00%p'
+  return `${n > 0 ? '+' : '△'}${Math.abs(n).toFixed(2)}%p`
+}
+
+function findResult(results, code, month) {
+  return (results || []).find((r) => r.code === code && Number(r.month) === Number(month))
+}
+
+function isCoreDef(def) {
+  return Boolean(def?.isCore || def?.is_core === 'Y' || def?.is_core === true)
+}
+
+function lv2Key(def) {
+  const lv1 = def.category || '미분류'
+  const lv2 = def.categoryL2 || '(미분류)'
+  return `${lv1}||${lv2}`
+}
+
+function enrichDef(def, results, selectedMonth) {
+  const curr = findResult(results, def.code, selectedMonth)
+  const prev = selectedMonth > 1 ? findResult(results, def.code, selectedMonth - 1) : null
+  const achievement = curr?.achievement != null ? Number(curr.achievement) : null
+  const prevAch = prev?.achievement != null ? Number(prev.achievement) : null
+  const momDiff = achievement != null && prevAch != null
+    ? Math.round((achievement - prevAch) * 100) / 100
+    : null
+  return {
+    def,
+    label: evalLabel(def),
+    unit: def.unit || '',
+    weight: Number(def.weight) || 0,
+    isCore: isCoreDef(def),
+    actual: curr?.actual ?? null,
+    target: curr?.target ?? null,
+    achievement,
+    prevAchievement: prevAch,
+    momDiff,
+    isPoor: achievement != null && achievement < POOR_THRESHOLD,
+    isNotableDrop: momDiff != null && momDiff <= NOTABLE_MOM_DROP,
+    isNotableSpike: momDiff != null && momDiff >= NOTABLE_MOM_SPIKE,
+  }
+}
+
+/** 기본 서술 대상: Core ∪ 부진. 그 외는 급감/급등 특이만. */
+function shouldIncludeRow(row) {
+  if (row.isCore || row.isPoor) return true
+  if (row.isNotableDrop || row.isNotableSpike) return true
+  return false
+}
+
+function inclusionTag(row) {
+  const tags = []
+  if (row.isCore) tags.push('Core')
+  if (row.isPoor) tags.push('부진')
+  if (row.isNotableDrop) tags.push('전월급감')
+  if (row.isNotableSpike) tags.push('전월급등')
+  return tags.join(',')
+}
+
+export function buildReportPrompt({ group, categories, kpiDefs, refDefs, results, selectedMonth, selectedYear }) {
+  const year = selectedYear || new Date().getFullYear()
   const monthLabel = `${selectedMonth}월`
+  const defs = (kpiDefs || []).filter((d) => !d.mgmtTool || d.mgmtTool === 'KPI')
 
-  // 카테고리별 KPI 실적 테이블
-  const categoryBlocks = categories.map(cat => {
-    const defs = kpiDefs.filter(d => d.category === cat)
-    let ws = 0, wt = 0
-    const rows = defs.map(def => {
-      const r = results.find(r => r.code === def.code && r.month === selectedMonth && r.mgmtTool === 'KPI')
-      const target = r?.target ?? 0
-      const actual = r?.actual ?? 0
-      const ach = r?.achievement ?? 0
-      ws += ach * def.weight; wt += def.weight
+  const enrichedAll = defs.map((d) => enrichDef(d, results, selectedMonth))
 
-      // 최근 3개월 추세
-      const trend = [selectedMonth - 2, selectedMonth - 1, selectedMonth]
-        .filter(m => m >= 1)
-        .map(m => {
-          const mr = results.find(r2 => r2.code === def.code && r2.month === m)
-          return mr?.achievement != null ? `${m}월:${mr.achievement}%` : null
-        }).filter(Boolean).join(' → ')
+  // 종합 달성률 (전체 KPI 가중 — Core만이 아님)
+  let totalWs = 0
+  let totalWt = 0
+  let over100 = 0
+  let mid = 0
+  let underPoor = 0
+  enrichedAll.forEach((row) => {
+    if (row.achievement == null) return
+    totalWs += row.achievement * row.weight
+    totalWt += row.weight
+    if (row.achievement >= 100) over100 += 1
+    else if (row.achievement >= POOR_THRESHOLD) mid += 1
+    else underPoor += 1
+  })
+  const overallAch = totalWt > 0 ? Math.round((totalWs / totalWt) * 10) / 10 : null
 
-      const lab = evalLabel(def)
-      const refName = lab !== def.name ? ` [관리용: ${def.name}]` : ''
-      return `  - ${catPath(def)} · ${lab}${refName} (${def.unit}, 비중${def.weight}%): 목표 ${target.toLocaleString()} / 실적 ${actual.toLocaleString()} / 달성률 ${ach}% [추세: ${trend}]`
-    }).join('\n')
-    const catAch = wt > 0 ? Math.round(ws / wt * 10) / 10 : 0
-    return `### ${cat} (카테고리 달성률: ${catAch}%)\n${rows}`
-  }).join('\n\n')
+  // 전월 종합
+  let prevWs = 0
+  let prevWt = 0
+  if (selectedMonth > 1) {
+    defs.forEach((def) => {
+      const r = findResult(results, def.code, selectedMonth - 1)
+      if (r?.achievement == null) return
+      const w = Number(def.weight) || 0
+      prevWs += Number(r.achievement) * w
+      prevWt += w
+    })
+  }
+  const prevOverall = prevWt > 0 ? Math.round((prevWs / prevWt) * 10) / 10 : null
+  const overallMom = overallAch != null && prevOverall != null
+    ? Math.round((overallAch - prevOverall) * 100) / 100
+    : null
 
-  // 종합 달성률
-  let totalWs = 0, totalWt = 0, over100 = 0, mid = 0, under80 = 0
-  kpiDefs.forEach(def => {
-    const r = results.find(r => r.code === def.code && r.month === selectedMonth)
-    if (r?.achievement != null) {
-      totalWs += r.achievement * def.weight; totalWt += def.weight
-      if (r.achievement >= 100) over100++
-      else if (r.achievement >= 80) mid++
-      else under80++
+  const included = enrichedAll.filter(shouldIncludeRow)
+  const notableOnly = included.filter((r) => !r.isCore && !r.isPoor && (r.isNotableDrop || r.isNotableSpike))
+
+  // Lv2 그룹핑 (평가 Lv1 → Lv2)
+  const lv2Map = new Map()
+  included.forEach((row) => {
+    const key = lv2Key(row.def)
+    if (!lv2Map.has(key)) {
+      lv2Map.set(key, {
+        lv1: row.def.category || '미분류',
+        lv2: row.def.categoryL2 || '(미분류)',
+        rows: [],
+      })
+    }
+    lv2Map.get(key).rows.push(row)
+  })
+
+  // categories 순서로 Lv1 정렬, 그 안 Lv2는 첫 등장순
+  const catOrder = (categories || []).length
+    ? categories
+    : [...new Set(defs.map((d) => d.category).filter(Boolean))]
+
+  const lv2Blocks = []
+  const seen = new Set()
+  catOrder.forEach((lv1) => {
+    ;[...lv2Map.values()]
+      .filter((g) => g.lv1 === lv1)
+      .forEach((g) => {
+        const k = `${g.lv1}||${g.lv2}`
+        if (seen.has(k)) return
+        seen.add(k)
+        lv2Blocks.push(g)
+      })
+  })
+  ;[...lv2Map.values()].forEach((g) => {
+    const k = `${g.lv1}||${g.lv2}`
+    if (!seen.has(k)) {
+      seen.add(k)
+      lv2Blocks.push(g)
     }
   })
-  const overallAch = totalWt > 0 ? Math.round(totalWs / totalWt * 10) / 10 : 0
 
-  // 월별 종합 추세
-  const monthlyTrend = Array.from({ length: selectedMonth }, (_, i) => {
-    const m = i + 1
-    let ws2 = 0, wt2 = 0
-    kpiDefs.forEach(def => {
-      const r = results.find(r => r.code === def.code && r.month === m)
-      if (r?.achievement != null) { ws2 += r.achievement * def.weight; wt2 += def.weight }
+  const lv2DataText = lv2Blocks.map((g) => {
+    let ws = 0
+    let wt = 0
+    g.rows.forEach((r) => {
+      if (r.achievement == null) return
+      ws += r.achievement * r.weight
+      wt += r.weight
     })
-    return `${m}월: ${wt2 > 0 ? Math.round(ws2 / wt2 * 10) / 10 : 0}%`
-  }).join(', ')
+    const lv2Ach = wt > 0 ? (Math.round((ws / wt) * 10) / 10).toFixed(1) : '—'
+    const lines = g.rows
+      .sort((a, b) => {
+        if (a.isPoor !== b.isPoor) return a.isPoor ? -1 : 1
+        if (a.isCore !== b.isCore) return a.isCore ? -1 : 1
+        return (a.achievement ?? 999) - (b.achievement ?? 999)
+      })
+      .map((r) => {
+        const mom = r.momDiff != null ? ` / 전월비 ${fmtMom(r.momDiff)}` : ''
+        const tgt = r.target != null ? ` / 목표 ${fmtNum(r.target)}` : ''
+        const dir = r.def.goalDirection || r.def.goal_direction || 'increase'
+        return `  - [${inclusionTag(r)}] ${r.label} (${r.unit || '-'}, 방향:${dir === 'decrease' ? '하향' : '상향'}): 실적 ${fmtNum(r.actual)}${tgt} / 달성률 ${fmtAch(r.achievement)}${mom}`
+      })
+      .join('\n')
 
-  // 전략과제/모니터링 참고 데이터
-  const refBlock = ['전략과제', '모니터링'].map(tool => {
-    const items = refDefs.filter(d => d.mgmtTool === tool)
-    if (items.length === 0) return ''
-    const rows = items.map(def => {
-      const latest = results.find(r => r.code === def.code && r.month === selectedMonth)
-      const prev = results.find(r => r.code === def.code && r.month === Math.max(1, selectedMonth - 1))
-      return `  - ${def.name} (${def.unit}): ${monthLabel} 실적 ${latest?.actual?.toLocaleString() ?? '-'} / 전월 ${prev?.actual?.toLocaleString() ?? '-'}`
+    // 같은 Lv2의 미포함 지표도 원인추론 참고로 제공
+    const siblings = enrichedAll.filter((r) => (
+      (r.def.category || '미분류') === g.lv1
+      && (r.def.categoryL2 || '(미분류)') === g.lv2
+      && !g.rows.some((x) => x.def.code === r.def.code)
+    ))
+    const siblingLines = siblings.slice(0, 8).map((r) => {
+      const mom = r.momDiff != null ? `, 전월비 ${fmtMom(r.momDiff)}` : ''
+      return `  · ${r.label}: 달성률 ${fmtAch(r.achievement)}${mom}`
     }).join('\n')
-    return `[${tool}]\n${rows}`
-  }).filter(Boolean).join('\n\n')
 
-  // 부진 지표 (80% 미만) 상세
-  const weakKpis = kpiDefs
-    .map(def => {
-      const r = results.find(r => r.code === def.code && r.month === selectedMonth)
-      return { ...def, achievement: r?.achievement ?? 0, target: r?.target ?? 0, actual: r?.actual ?? 0 }
-    })
-    .filter(k => k.achievement < 80)
-    .sort((a, b) => a.achievement - b.achievement)
+    return [
+      `### ${g.lv1} > ${g.lv2} (Lv2 가중달성률 ${lv2Ach}%)`,
+      `【본문 서술 지표】`,
+      lines || '  - (해당 지표 없음)',
+      siblings.length ? `【같은 Lv2 참고지표 — 원인추론용, 본문에 나열하지 말 것】\n${siblingLines}` : null,
+    ].filter(Boolean).join('\n')
+  }).join('\n\n')
 
-  const weakBlock = weakKpis.length > 0
-    ? weakKpis.map(k => `  - ${catPath(k)} · ${evalLabel(k)} (${k.name}): 달성률 ${k.achievement}%, 비중 ${k.weight}%`).join('\n')
+  const notableBlock = notableOnly.length
+    ? notableOnly.map((r) => (
+      `  - ${r.def.category || ''} > ${r.def.categoryL2 || ''} · ${r.label}: 달성률 ${fmtAch(r.achievement)}, 전월비 ${fmtMom(r.momDiff)} (${inclusionTag(r)})`
+    )).join('\n')
     : '  - 해당 없음'
 
-  const systemPrompt = `당신은 은행 종합기획부의 KPI 성과관리 전문 분석가입니다.
-주어진 데이터를 기반으로 경영진 보고용 실적 진단 보고서를 작성하세요.
-수치를 정확히 인용하고, 구체적이고 실행 가능한 개선과제를 제시하세요.
-보고서는 마크다운 형식으로 작성하되, 간결하고 핵심적인 내용 위주로 작성하세요.
-은행 경영진이 5분 내에 읽을 수 있는 분량으로 작성하세요.`
+  const systemPrompt = `당신은 은행 영업·기획 현장의 KPI 실적 코멘트 작성자입니다.
+짧고 실무적인 실적 보고 문안만 씁니다. 장문 진단서·개선과제 나열·차월계획은 금지합니다.
 
-  const userPrompt = `# ${group} 2026년 ${monthLabel} KPI 실적 진단 보고서 작성 요청
+【코멘트 문체】
+- "전월대비:", "부진원인:", "(분석1)", "(분석2)" 같은 **표제/라벨을 붙이지 마세요.**
+- Lv2마다 지표 나열 다음에 **자연스러운 문장 2줄**만 씁니다.
+- 2줄의 내용은 전월 변화·부진/특이 원인이 있을 때 그걸 다루면 됩니다. 특이 없으면 핵심만 담담히.
+- 금지(동어반복): "달성률이 낮아져서 부진", "전월비가 감소해서 부진"처럼 결과 수치를 원인처럼 말하는 문장.
+- 허용: 신규취급·평잔·마진/가격·구성·이탈·캠페인·계절성·경쟁·상품믹스 등 현장 요인. 근거 약하면 "…로 추정".
+- 없는 수치·사건·조직명은 만들지 말 것.`
 
-## 종합 현황
-- 종합 가중 달성률: ${overallAch}%
-- 100% 이상: ${over100}개 / 80~99%: ${mid}개 / 80% 미만: ${under80}개
-- 월별 추세: ${monthlyTrend}
+  const userPrompt = `# ${group} ${year}년 ${monthLabel} KPI 실적 보고 작성
 
-## 카테고리별 KPI 실적
-${categoryBlocks}
+## 작성 규칙 (반드시 준수)
+1. 맨 위 **종합 달성률** + 전월비.
+2. 본문은 **평가 Lv2 단위**. Lv1 에세이·카테고리 총평 금지.
+3. 각 Lv2:
+   - 【본문 서술 지표】만 실적·달성률·전월비 나열 (참고지표는 본문에 나열 금지, 원인 추론에만 사용)
+   - 이어서 **코멘트 2줄** (라벨 없이 문장만)
+     · 전월 급변·부진·특이만 있을 때 그걸 중심으로
+     · 특이 없으면 "양호 유지" 수준으로 짧게
+4. 코멘트 불합격 예시:
+   - ❌ "(분석1) 전월대비: … / (분석2) 부진원인: …" 라벨 붙이기
+   - ❌ "전월비가 줄어 달성률이 낮아짐" (동어반복)
+   - ✅ "신규여신 조정ROC는 금리경쟁·고수익 취급 비중 축소로 마진이 눌린 영향으로 보임."
+5. 서술 대상: **Core + 부진(<${POOR_THRESHOLD}%)**. 그 외는 전월 급감(≤${NOTABLE_MOM_DROP}%p) 등 특이만.
+6. 개선과제·차월계획·추진현황 섹션 금지.
 
-## 부진 지표 (80% 미만)
-${weakBlock}
+## 종합 현황 (사실)
+- 종합 가중 달성률: ${overallAch != null ? `${overallAch}%` : '—'}
+- 전월 종합: ${prevOverall != null ? `${prevOverall}%` : '—'} / 전월비: ${fmtMom(overallMom)}
+- 분포: 100%↑ ${over100}개 · ${POOR_THRESHOLD}~99% ${mid}개 · 부진(<${POOR_THRESHOLD}%) ${underPoor}개
 
-## 참고 데이터 (목표·달성률 없음, 추세 확인용)
-${refBlock}
+## Lv2별 데이터
+${lv2DataText || '(포함 지표 없음)'}
+
+## Core·부진 외 특이 지표
+${notableBlock}
 
 ---
 
-위 데이터를 분석하여 아래 구조로 보고서를 작성해주세요:
+출력 형식 예시 (라벨 금지):
 
-## 1. 종합 진단
-- 전체적인 실적 수준 평가 (1~2문단)
-- 전월 대비 추세 진단
+# ${group} ${monthLabel} 실적
 
-## 2. 카테고리별 분석
-- 본원적 수익력 / 건전성 / 고객 / 연결과 확장 각각에 대해:
-  - 핵심 성과 요약
-  - 우수 지표와 부진 지표 식별
-  - 원인 분석 (가능한 범위에서)
+**종합 달성률: OO.O%** (전월비 +x.xx%p 또는 △x.xx%p)
 
-## 3. 추진현황
-- 양호하게 추진되고 있는 영역
-- 주의가 필요한 영역
-- 전략과제 및 모니터링 지표 시사점
-
-## 4. 핵심 개선과제 (우선순위 순)
-- 각 과제별: 과제명, 관련 KPI, 현재 수준, 목표 수준, 구체적 실행방안
-
-## 5. 차월 추진방향
-- 다음 달 중점 관리 사항
-- 달성률 제고를 위한 액션 플랜`
+## {Lv1} > {Lv2}
+- 지표명: 실적 … / 달성률 …% / 전월비 …
+- 지표명: …
+우량여신 순증은 크게 회복됐으나, 조정ROC는 마진 압박으로 전월보다 둔화됨.
+신규 유입 대비 초기 이탈이 커 유지율 지표가  lagged 훼손된 것으로 추정.`
 
   return { systemPrompt, userPrompt }
 }

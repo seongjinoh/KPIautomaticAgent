@@ -5,12 +5,36 @@
 
 const STORAGE_KEY = 'kpi_llm_settings'
 
+function envSettings() {
+  const env = import.meta.env || {}
+  return {
+    provider: env.VITE_LLM_PROVIDER || 'gemini',
+    apiKey: env.VITE_GEMINI_API_KEY || env.VITE_LLM_API_KEY || '',
+    model: env.VITE_GEMINI_MODEL || env.VITE_LLM_MODEL || 'gemini-2.0-flash',
+    baseUrl: env.VITE_LLM_BASE_URL || '',
+    source: env.VITE_GEMINI_API_KEY || env.VITE_LLM_API_KEY ? 'env' : 'manual',
+  }
+}
+
 export function loadSettings() {
+  const defaults = envSettings()
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
-    if (raw) return JSON.parse(raw)
+    if (raw) {
+      const saved = JSON.parse(raw)
+      const shouldUseEnvCredential = !saved.apiKey && defaults.apiKey
+      return {
+        ...defaults,
+        ...saved,
+        apiKey: shouldUseEnvCredential ? defaults.apiKey : (saved.apiKey || defaults.apiKey),
+        model: shouldUseEnvCredential ? defaults.model : (saved.model || defaults.model),
+        provider: shouldUseEnvCredential ? defaults.provider : (saved.provider || defaults.provider),
+        baseUrl: shouldUseEnvCredential ? defaults.baseUrl : (saved.baseUrl || defaults.baseUrl),
+        source: saved.apiKey ? 'manual' : defaults.source,
+      }
+    }
   } catch {}
-  return { provider: 'openai', apiKey: '', model: 'gpt-4o', baseUrl: '' }
+  return defaults
 }
 
 export function saveSettings(settings) {
@@ -149,6 +173,6 @@ async function streamSSE(res, onChunk) {
 
 export const PROVIDER_OPTIONS = [
   { id: 'openai', label: 'OpenAI', models: ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'o3-mini'] },
-  { id: 'gemini', label: 'Google Gemini', models: ['gemini-2.5-flash-lite', 'gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-2.0-flash-lite', 'gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-2.5-pro-exp-03-25'] },
+  { id: 'gemini', label: 'Google Gemini', models: ['gemini-2.0-flash', 'gemini-2.0-flash-lite', 'gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-2.5-flash', 'gemini-2.5-flash-lite'] },
   { id: 'custom', label: '커스텀 (OpenAI 호환)', models: [] },
 ]

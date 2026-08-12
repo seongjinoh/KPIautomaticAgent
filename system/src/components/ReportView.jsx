@@ -1,23 +1,88 @@
-import { useState, useCallback, useRef } from 'react'
-import { FileText, Settings, Play, Loader2, Copy, Check, RotateCcw, ChevronDown, ChevronUp } from 'lucide-react'
+import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
+import { FileText, Settings, Play, Loader2, Copy, Check, RotateCcw, ChevronDown, ChevronUp, Save } from 'lucide-react'
 import { loadSettings, saveSettings, callLLM, PROVIDER_OPTIONS } from '../lib/llmService'
 import { buildReportPrompt } from '../lib/reportPrompt'
 import MarkdownRenderer from './MarkdownRenderer'
 
-export default function ReportView({ group, categories, definitions, results, selectedMonth }) {
+const PROMPT_STORAGE_KEY = 'kpi_report_prompt_override'
+
+function loadPromptOverride() {
+  try {
+    const raw = localStorage.getItem(PROMPT_STORAGE_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object') return null
+    return {
+      systemPrompt: typeof parsed.systemPrompt === 'string' ? parsed.systemPrompt : null,
+      userPrompt: typeof parsed.userPrompt === 'string' ? parsed.userPrompt : null,
+      saveUserAlso: Boolean(parsed.saveUserAlso),
+    }
+  } catch {
+    return null
+  }
+}
+
+function savePromptOverride(payload) {
+  localStorage.setItem(PROMPT_STORAGE_KEY, JSON.stringify(payload))
+}
+
+function clearPromptOverride() {
+  localStorage.removeItem(PROMPT_STORAGE_KEY)
+}
+
+export default function ReportView({ group, categories, definitions, results, selectedMonth, selectedYear }) {
   const [report, setReport] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [showSettings, setShowSettings] = useState(false)
   const [copied, setCopied] = useState(false)
-  const [showPrompt, setShowPrompt] = useState(false)
+  const [showPrompt, setShowPrompt] = useState(true)
   const [settings, setSettings] = useState(loadSettings)
-  const abortRef = useRef(null)
+  const [systemEdit, setSystemEdit] = useState('')
+  const [userEdit, setUserEdit] = useState('')
+  const [promptDirty, setPromptDirty] = useState(false)
+  const [promptSavedMsg, setPromptSavedMsg] = useState('')
+  const lastBuiltKey = useRef('')
 
-  const kpiDefs = definitions.filter(d => d.mgmtTool === 'KPI')
-  const refDefs = definitions.filter(d => d.mgmtTool !== 'KPI')
+  const kpiDefs = useMemo(() => definitions.filter(d => d.mgmtTool === 'KPI'), [definitions])
+  const refDefs = useMemo(() => definitions.filter(d => d.mgmtTool !== 'KPI'), [definitions])
 
-  const prompt = buildReportPrompt({ group, categories, kpiDefs, refDefs, results, selectedMonth })
+  const builtPrompt = useMemo(() => buildReportPrompt({
+    group,
+    categories,
+    kpiDefs,
+    refDefs,
+    results,
+    selectedMonth,
+    selectedYear,
+  }), [group, categories, kpiDefs, refDefs, results, selectedMonth, selectedYear])
+
+  const builtKey = `${group}|${selectedYear}|${selectedMonth}|${builtPrompt.systemPrompt.length}|${builtPrompt.userPrompt.length}`
+
+  useEffect(() => {
+    const override = loadPromptOverride()
+    const dataChanged = Boolean(lastBuiltKey.current) && lastBuiltKey.current !== builtKey
+    lastBuiltKey.current = builtKey
+
+    // 연월·그룹 등 데이터가 바뀌었거나, 아직 사용자가 손대기 전일 때만 에디터 갱신
+    if (dataChanged || !promptDirty) {
+      setSystemEdit(override?.systemPrompt || builtPrompt.systemPrompt)
+      if (override?.saveUserAlso && override.userPrompt && !dataChanged) {
+        setUserEdit(override.userPrompt)
+      } else {
+        setUserEdit(builtPrompt.userPrompt)
+      }
+      if (dataChanged) setPromptDirty(false)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- promptDirty는 의도적으로 제외(수정 중 덮어쓰기 방지)
+  }, [builtKey, builtPrompt.systemPrompt, builtPrompt.userPrompt])
+
+  const coreCount = kpiDefs.filter((d) => d.isCore).length
+
+  const activePrompt = useMemo(() => ({
+    systemPrompt: systemEdit || builtPrompt.systemPrompt,
+    userPrompt: userEdit || builtPrompt.userPrompt,
+  }), [systemEdit, userEdit, builtPrompt])
 
   const handleGenerate = useCallback(async () => {
     if (!settings.apiKey) {
@@ -29,18 +94,46 @@ export default function ReportView({ group, categories, definitions, results, se
     setError('')
     setReport('')
     try {
-      await callLLM(prompt, (chunk) => setReport(chunk))
+      await callLLM(activePrompt, (chunk) => setReport(chunk))
     } catch (e) {
       setError(e.message)
     } finally {
       setLoading(false)
     }
-  }, [prompt, settings.apiKey])
+  }, [activePrompt, settings.apiKey])
 
   const handleCopy = () => {
     navigator.clipboard.writeText(report)
     setCopied(true)
     setTimeout(() => setCopied(false), 2000)
+  }
+
+  const handleCopyPrompt = async () => {
+    await navigator.clipboard.writeText(
+      `【시스템】\n${activePrompt.systemPrompt}\n\n【사용자】\n${activePrompt.userPrompt}`,
+    )
+    setPromptSavedMsg('프롬프트를 복사했습니다.')
+    setTimeout(() => setPromptSavedMsg(''), 2000)
+  }
+
+  const handleResetPrompt = () => {
+    clearPromptOverride()
+    setSystemEdit(builtPrompt.systemPrompt)
+    setUserEdit(builtPrompt.userPrompt)
+    setPromptDirty(false)
+    setPromptSavedMsg('기본 프롬프트로 되돌렸습니다.')
+    setTimeout(() => setPromptSavedMsg(''), 2000)
+  }
+
+  const handleSavePrompt = (saveUserAlso = false) => {
+    savePromptOverride({
+      systemPrompt: systemEdit,
+      userPrompt: saveUserAlso ? userEdit : null,
+      saveUserAlso,
+    })
+    setPromptDirty(false)
+    setPromptSavedMsg(saveUserAlso ? '시스템·사용자 프롬프트를 저장했습니다.' : '시스템 프롬프트를 저장했습니다. (데이터 본문은 연월 바뀔 때 자동 갱신)')
+    setTimeout(() => setPromptSavedMsg(''), 3500)
   }
 
   const handleSaveSettings = (newSettings) => {
@@ -54,7 +147,6 @@ export default function ReportView({ group, categories, definitions, results, se
 
   return (
     <div className="space-y-5">
-      {/* Header */}
       <div className="bg-white rounded-xl border border-slate-200 p-5">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
@@ -63,7 +155,9 @@ export default function ReportView({ group, categories, definitions, results, se
             </div>
             <div>
               <h3 className="text-base font-bold text-slate-800">AI 실적 진단 보고서</h3>
-              <p className="text-xs text-slate-400">{group} · {selectedMonth}월 기준 · KPI {kpiDefs.length}개 + 참고 {refDefs.length}개 데이터 분석</p>
+              <p className="text-xs text-slate-400">
+                {group} · {selectedYear ? `${selectedYear}년 ` : ''}{selectedMonth}월 · Core {coreCount}개 포함 · 부진·특이 중심 현업형 문안
+              </p>
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -86,12 +180,10 @@ export default function ReportView({ group, categories, definitions, results, se
         </div>
       </div>
 
-      {/* Settings Panel */}
       {showSettings && (
         <SettingsPanel settings={settings} onSave={handleSaveSettings} onClose={() => setShowSettings(false)} />
       )}
 
-      {/* Error */}
       {error && (
         <div className="bg-red-50 border border-red-200 rounded-xl p-4 text-sm text-red-700">
           <strong>오류:</strong> {error}
@@ -114,28 +206,82 @@ export default function ReportView({ group, categories, definitions, results, se
         </div>
       )}
 
-      {/* Prompt Preview */}
       <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
         <button
+          type="button"
           onClick={() => setShowPrompt(!showPrompt)}
           className="w-full px-5 py-3 flex items-center justify-between text-sm text-slate-600 hover:bg-slate-50 transition-colors"
         >
           <span className="flex items-center gap-2">
-            <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-slate-100 text-slate-500">PROMPT</span>
-            프롬프트 미리보기 (LLM에 전달되는 데이터)
+            <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-violet-100 text-violet-700">편집 가능</span>
+            프롬프트 (생성 전 직접 수정)
+            {promptDirty && <span className="text-[10px] text-amber-600">수정됨</span>}
           </span>
           {showPrompt ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
         </button>
         {showPrompt && (
-          <div className="px-5 pb-4 border-t border-slate-100">
-            <pre className="text-xs text-slate-600 bg-slate-50 rounded-lg p-4 mt-3 max-h-80 overflow-y-auto whitespace-pre-wrap font-mono leading-relaxed">
-              {prompt.userPrompt}
-            </pre>
+          <div className="px-5 pb-4 border-t border-slate-100 space-y-3">
+            <p className="text-[11px] text-slate-500 mt-3">
+              아래 내용이 LLM에 그대로 전달됩니다. 연·월·그룹이 바뀌면 데이터 본문(사용자 프롬프트)은 다시 채워집니다.
+              시스템 안내는 「시스템만 저장」으로 브라우저에 남길 수 있습니다.
+            </p>
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <label className="text-xs font-semibold text-slate-600">시스템 프롬프트 (역할·문체 규칙)</label>
+              </div>
+              <textarea
+                value={systemEdit}
+                onChange={(e) => { setSystemEdit(e.target.value); setPromptDirty(true) }}
+                rows={8}
+                className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-mono text-slate-700 outline-none focus:border-violet-400 focus:bg-white"
+              />
+            </div>
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <label className="text-xs font-semibold text-slate-600">사용자 프롬프트 (데이터 + 출력 지시)</label>
+              </div>
+              <textarea
+                value={userEdit}
+                onChange={(e) => { setUserEdit(e.target.value); setPromptDirty(true) }}
+                rows={18}
+                className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-mono text-slate-700 outline-none focus:border-violet-400 focus:bg-white"
+              />
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => handleSavePrompt(false)}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-violet-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-violet-700"
+              >
+                <Save className="w-3.5 h-3.5" /> 시스템만 저장
+              </button>
+              <button
+                type="button"
+                onClick={() => handleSavePrompt(true)}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-violet-200 bg-violet-50 px-3 py-1.5 text-xs font-medium text-violet-700 hover:bg-violet-100"
+              >
+                <Save className="w-3.5 h-3.5" /> 시스템+사용자 저장
+              </button>
+              <button
+                type="button"
+                onClick={handleResetPrompt}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-50"
+              >
+                <RotateCcw className="w-3.5 h-3.5" /> 기본값 복원
+              </button>
+              <button
+                type="button"
+                onClick={handleCopyPrompt}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-50"
+              >
+                <Copy className="w-3.5 h-3.5" /> 복사
+              </button>
+              {promptSavedMsg && <span className="text-[11px] text-emerald-700">{promptSavedMsg}</span>}
+            </div>
           </div>
         )}
       </div>
 
-      {/* Report Output */}
       {(report || loading) && (
         <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
           <div className="px-5 py-3 border-b border-slate-100 flex items-center justify-between">
@@ -169,7 +315,6 @@ export default function ReportView({ group, categories, definitions, results, se
         </div>
       )}
 
-      {/* Empty State */}
       {!report && !loading && !error && (
         <div className="bg-white rounded-xl border border-slate-200 p-12 text-center">
           <div className="w-16 h-16 rounded-2xl bg-violet-50 flex items-center justify-center mx-auto mb-4">
@@ -177,8 +322,7 @@ export default function ReportView({ group, categories, definitions, results, se
           </div>
           <h3 className="text-lg font-semibold text-slate-700 mb-2">보고서를 생성해 보세요</h3>
           <p className="text-sm text-slate-400 max-w-md mx-auto mb-6">
-            {group}의 KPI {kpiDefs.length}개, 전략과제·모니터링 {refDefs.length}개 데이터를 AI가 분석하여
-            실적 진단, 추진현황, 개선과제를 포함한 경영진 보고서를 자동 생성합니다.
+            위 프롬프트를 수정한 뒤 생성하면, 편집한 내용 그대로 LLM에 전달됩니다.
           </p>
           <div className="flex items-center justify-center gap-3">
             <button
