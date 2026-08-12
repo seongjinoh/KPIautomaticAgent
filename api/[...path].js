@@ -37,7 +37,11 @@ function resolveUpstreamPath(req) {
       pathname = `/api${pathname.startsWith('/') ? pathname : `/${pathname}`}`
     }
   }
-  return `${pathname}${u.search || ''}`
+  // Vercel catch-all이 붙이는 path 쿼리는 업스트림으로 넘기지 않음
+  const params = new URLSearchParams(u.search || '')
+  params.delete('path')
+  const qs = params.toString()
+  return `${pathname}${qs ? `?${qs}` : ''}`
 }
 
 export default async function handler(req, res) {
