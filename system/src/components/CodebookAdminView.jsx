@@ -90,11 +90,15 @@ export default function CodebookAdminView() {
       setFormulas(ff.items || [])
     } catch (e) {
       setApiOk(false)
-      const cold = /onrender\.com/i.test(api.base)
+      const viaProxy = !api.apiBase
+      const cold = /onrender\.com/i.test(api.apiBase || '')
+      const msg = e?.data?.message || e?.message || ''
       setError(
         cold
           ? `API 연결 실패 (${api.base}). Render 무료 서버가 잠들었거나 재배포 중일 수 있습니다. 1~2분 후 「다시 시도」를 눌러 주세요.`
-          : `API 연결 실패 (${api.base}). 서버를 실행하세요: python server/kpi_api.py`,
+          : viaProxy
+            ? `API 연결 실패 (${api.base}). 이 PC에서 API+ngrok이 꺼져 있으면 Vercel도 실패합니다. Cursor 터미널: .\\scripts\\start-kpi-stack.ps1 실행 후 「다시 시도」${msg ? ` — ${msg}` : ''}`
+            : `API 연결 실패 (${api.base}). 서버를 실행하세요: python server/kpi_api.py${msg ? ` — ${msg}` : ''}`,
       )
     } finally {
       setLoading(false)

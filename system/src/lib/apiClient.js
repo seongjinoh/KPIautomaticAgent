@@ -1,15 +1,18 @@
 const envBase = import.meta.env.VITE_API_BASE
-// Vercel: VITE_API_BASE=same-origin → /api (vercel.json rewrite → ngrok)
-// 로컬: 미설정 또는 http://127.0.0.1:8787
+// Vercel: VITE_API_BASE=same-origin → /api (Vercel serverless → ngrok)
+// 로컬 dev: http://127.0.0.1:8787
 const API_BASE = (() => {
   if (envBase === undefined || envBase === null || envBase === '') return 'http://127.0.0.1:8787'
   const raw = String(envBase).trim().replace(/\/$/, '')
   if (!raw || raw === 'same-origin' || raw === '/') return ''
   return raw
 })()
-const IS_REMOTE_API = /onrender\.com|vercel\.app|ngrok(-free)?\.(app|dev|io)|ngrok\.io/i.test(API_BASE)
-  || (API_BASE === '' && typeof window !== 'undefined' && /vercel\.app$/i.test(window.location.hostname))
+const IS_LOCAL_API = API_BASE === 'http://127.0.0.1:8787'
+const IS_REMOTE_API = !IS_LOCAL_API
 const NGROK_HEADERS = /ngrok/i.test(API_BASE) ? { 'ngrok-skip-browser-warning': '1' } : {}
+
+/** UI/에러 메시지용 */
+const API_DISPLAY = API_BASE || (typeof window !== 'undefined' ? `${window.location.origin}/api` : '/api')
 
 /** 엑셀 다운로드 등 <a href>용 — 헤더를 못 넣으니 쿼리로도 우회 시도 */
 function withNgrokBypass(url) {
@@ -74,7 +77,8 @@ async function request(path, options = {}, retryOpts = {}) {
 }
 
 export const api = {
-  base: API_BASE,
+  base: API_DISPLAY,
+  apiBase: API_BASE,
   health: () => request('/api/health', {}, { retries: 4, timeoutMs: 120000 }),
   listLv1: () => request('/api/codes/lv1'),
   listLv2: (lv1) => request(`/api/codes/lv2${lv1 ? `?lv1=${encodeURIComponent(lv1)}` : ''}`),
