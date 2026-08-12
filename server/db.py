@@ -2,6 +2,7 @@
 """SQLite 연결·스키마 초기화."""
 from __future__ import annotations
 
+import os
 import sqlite3
 from pathlib import Path
 
@@ -72,7 +73,9 @@ def init_schema(conn: sqlite3.Connection | None = None) -> None:
         migrate_s22_to_sg2(conn)
         migrate_lv3_unique(conn)
         migrate_lv2_from_0001(conn)
-        seed_supersol_demo(conn)
+        # 가라 데모 지표 자동 재주입 비활성 (필요 시 SEED_SUPERSOL_DEMO=1)
+        if os.environ.get("SEED_SUPERSOL_DEMO", "").strip() in ("1", "true", "TRUE", "yes"):
+            seed_supersol_demo(conn)
         if _table_exists(conn, "code_lv2") and "sort_order" in _columns(conn, "code_lv2"):
             conn.execute("CREATE INDEX IF NOT EXISTS ix_code_lv2_sort ON code_lv2(sort_order, code)")
         conn.commit()

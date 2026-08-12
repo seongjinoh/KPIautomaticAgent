@@ -80,37 +80,15 @@ DEMO_DB_GZ = DATA_DIR / "kpi.demo.sqlite.gz"
 
 
 def ensure_demo_database() -> None:
-    """배포용: DB가 없거나 2026 평가배치가 비면 번들 데모 sqlite(gz)로 복구."""
+    """배포용: DB 파일이 없을 때만 번들 sqlite(gz)로 초기화. (데이터 강제 복구 안 함)"""
     if not DEMO_DB_GZ.exists():
         return
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
     need_restore = (not DB_PATH.exists()) or DB_PATH.stat().st_size <= 0
     if not need_restore:
-        try:
-            with get_connection() as conn:
-                row = conn.execute(
-                    """
-                    SELECT 1
-                      FROM eval_plan_set s
-                     WHERE s.year = 2026
-                       AND EXISTS (
-                         SELECT 1 FROM eval_plan_item e WHERE e.plan_set_id = s.id
-                       )
-                     LIMIT 1
-                    """
-                ).fetchone()
-                if not row:
-                    need_restore = True
-                    print("Demo DB missing 2026 eval plan — restoring from", DEMO_DB_GZ.name)
-        except Exception as e:
-            need_restore = True
-            print("Demo DB check failed — restoring:", e)
-
-    if not need_restore:
         return
 
-    # 기존 깨진 DB 교체
     for suffix in ("", "-wal", "-shm"):
         p = Path(str(DB_PATH) + suffix) if suffix else DB_PATH
         if p.exists():
@@ -120,7 +98,21 @@ def ensure_demo_database() -> None:
                 pass
     with gzip.open(DEMO_DB_GZ, "rb") as src, open(DB_PATH, "wb") as dst:
         shutil.copyfileobj(src, dst)
-    print("Restored demo DB from", DEMO_DB_GZ.name)
+    print("Initialized DB from", DEMO_DB_GZ.name)
+
+
+def ensure_runtime_data_wiped_once() -> None:
+    """기존 배포 디스크에 남아 있는 가라데이터를 1회성으로 비운다."""
+    try:
+        from wipe_runtime_data import ensure_wiped_once
+    except ImportError:
+        return
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    if not DB_PATH.exists():
+        return
+    with get_connection() as conn:
+        if ensure_wiped_once(conn):
+            print("Wiped runtime KPI demo data (one-shot)")
 
 
 def rows_to_list(cur):
@@ -1349,6 +1341,21 @@ class Handler(BaseHTTPRequestHandler):
                     result = refresh_facts(conn, year, month)
                 self.send_json(result)
                 return
+            if path == "/api/admin/wipe-runtime-data":
+                body = self.read_json() or {}
+                if body.get("confirm") != "WIPE_ALL_RUNTIME_DATA":
+                    self.send_json(
+                        {"error": "validation", "message": 'body.confirm must be "WIPE_ALL_RUNTIME_DATA"'},
+                        400,
+                    )
+                    return
+                from wipe_runtime_data import clear_fixtures, wipe_connection
+                with get_connection() as conn:
+                    deleted = wipe_connection(conn, set_marker=True)
+                fixture_n = clear_fixtures()
+                total = sum(v for v in deleted.values() if v > 0)
+                self.send_json({"ok": True, "total_rows": total, "fixtures_cleared": fixture_n, "tables": deleted})
+                return
             if path == "/api/auth/sms/send":
                 # 운영: 행내 SMS 게이트웨이 연동. POC는 demo_code 반환.
                 body = self.read_json() or {}
@@ -1964,11 +1971,8 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     ensure_demo_database()
     init_schema()
-    with get_connection() as conn:
-        c = counts(conn)
-        if c.get("indicator_code", 0) == 0 and DEFAULT_XLSX.exists():
-            print("DB empty — importing", DEFAULT_XLSX.name)
-            import_workbook(DEFAULT_XLSX, conn)
+    ensure_runtime_data_wiped_once()
+    # 빈 DB에 코드마스터 xlsx 자동 import 하지 않음 (가라데이터 재주입 방지)
 
     httpd = ThreadingHTTPServer((HOST, PORT), Handler)
     print("KPI API  http://%s:%s/  (code master + eval plan set history)" % (HOST, PORT))
