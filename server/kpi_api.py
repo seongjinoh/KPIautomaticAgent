@@ -80,12 +80,44 @@ DEMO_DB_GZ = DATA_DIR / "kpi.demo.sqlite.gz"
 
 
 def ensure_demo_database() -> None:
-    """배포용: DB가 없으면 번들된 데모 sqlite(gz)를 풀어 둔다."""
-    if DB_PATH.exists() and DB_PATH.stat().st_size > 0:
-        return
+    """배포용: DB가 없거나 2026 평가배치가 비면 번들 데모 sqlite(gz)로 복구."""
     if not DEMO_DB_GZ.exists():
         return
     DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+    need_restore = (not DB_PATH.exists()) or DB_PATH.stat().st_size <= 0
+    if not need_restore:
+        try:
+            with get_connection() as conn:
+                row = conn.execute(
+                    """
+                    SELECT 1
+                      FROM eval_plan_set s
+                     WHERE s.year = 2026
+                       AND EXISTS (
+                         SELECT 1 FROM eval_plan_item e WHERE e.plan_set_id = s.id
+                       )
+                     LIMIT 1
+                    """
+                ).fetchone()
+                if not row:
+                    need_restore = True
+                    print("Demo DB missing 2026 eval plan — restoring from", DEMO_DB_GZ.name)
+        except Exception as e:
+            need_restore = True
+            print("Demo DB check failed — restoring:", e)
+
+    if not need_restore:
+        return
+
+    # 기존 깨진 DB 교체
+    for suffix in ("", "-wal", "-shm"):
+        p = Path(str(DB_PATH) + suffix) if suffix else DB_PATH
+        if p.exists():
+            try:
+                p.unlink()
+            except OSError:
+                pass
     with gzip.open(DEMO_DB_GZ, "rb") as src, open(DB_PATH, "wb") as dst:
         shutil.copyfileobj(src, dst)
     print("Restored demo DB from", DEMO_DB_GZ.name)
@@ -1932,18 +1964,6 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     ensure_demo_database()
     init_schema()
-    # 시트 지표가 없으면 로컬/Render DB에 자동 반영
-    try:
-        with get_connection() as conn:
-            has_sheet = conn.execute(
-                "SELECT 1 FROM indicator_code WHERE indicator_code='SOL-0009-0017-NEW-SHB'"
-            ).fetchone()
-        if not has_sheet:
-            from seed_sheet_indicators import run as seed_sheet
-            print("Sheet indicators missing — seeding…")
-            seed_sheet(refresh_facts=True)
-    except Exception as e:
-        print("sheet indicator seed skipped:", e)
     with get_connection() as conn:
         c = counts(conn)
         if c.get("indicator_code", 0) == 0 and DEFAULT_XLSX.exists():
