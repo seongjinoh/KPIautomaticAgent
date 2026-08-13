@@ -699,6 +699,106 @@ export default function App() {
     }
   }, [])
 
+  const reloadOwnerGroups = useCallback(async () => {
+    try {
+      const res = await api.listGroups()
+      setOwnerGroupRows(res.items || [])
+      return res.items || []
+    } catch {
+      setOwnerGroupRows([])
+      return []
+    }
+  }, [])
+
+  /** 평가배치·실적·그룹점수 메모리 캐시 무효화 → useEffect가 다시 fetch */
+  const invalidateLiveCaches = useCallback((keys) => {
+    const targetKeys = Array.isArray(keys) && keys.length
+      ? keys
+      : [currentEvalKey, prevEvalKey].filter(Boolean)
+    const dropKeys = (prev) => {
+      let changed = false
+      const next = { ...prev }
+      for (const k of targetKeys) {
+        if (Object.prototype.hasOwnProperty.call(next, k)) {
+          delete next[k]
+          changed = true
+        }
+      }
+      return changed ? next : prev
+    }
+    setResolvedEvalConfigsByMonth(dropKeys)
+    setAchievementsByMonth(dropKeys)
+    setGroupScoresByMonth(dropKeys)
+    evalHistoryLoadedRef.current.delete(selectedYear)
+  }, [currentEvalKey, prevEvalKey, selectedYear])
+
+  /** 저장 후: 해당 연도의 fromMonth~12월 실적·점수 캐시만 비움 */
+  const invalidateMetricsFromMonth = useCallback((year, fromMonth) => {
+    const start = Math.max(1, Math.min(12, Number(fromMonth) || 1))
+    const keys = []
+    for (let m = start; m <= 12; m += 1) keys.push(monthKey(year, m))
+    setAchievementsByMonth((prev) => {
+      let changed = false
+      const next = { ...prev }
+      for (const k of keys) {
+        if (Object.prototype.hasOwnProperty.call(next, k)) {
+          delete next[k]
+          changed = true
+        }
+      }
+      return changed ? next : prev
+    })
+    setGroupScoresByMonth((prev) => {
+      let changed = false
+      const next = { ...prev }
+      for (const k of keys) {
+        if (Object.prototype.hasOwnProperty.call(next, k)) {
+          delete next[k]
+          changed = true
+        }
+      }
+      return changed ? next : prev
+    })
+  }, [])
+
+  // 탭 복귀/창 포커스 시 최신 데이터로 맞춤 (폴링 없음)
+  useEffect(() => {
+    if (!currentUser) return undefined
+    let lastAt = 0
+    const syncIfVisible = () => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
+      const now = Date.now()
+      if (now - lastAt < 2500) return
+      lastAt = now
+      invalidateLiveCaches()
+      reloadEvalCodeCatalog()
+      reloadOwnerGroups()
+    }
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') syncIfVisible()
+    }
+    document.addEventListener('visibilitychange', onVisibility)
+    window.addEventListener('focus', syncIfVisible)
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility)
+      window.removeEventListener('focus', syncIfVisible)
+    }
+  }, [currentUser, invalidateLiveCaches, reloadEvalCodeCatalog, reloadOwnerGroups])
+
+  // 코드북 등에서 나가면 지표 마스터 카탈로그 갱신
+  const prevViewRef = useRef(view)
+  useEffect(() => {
+    const prev = prevViewRef.current
+    prevViewRef.current = view
+    if (prev === 'codebook' && view !== 'codebook') {
+      reloadEvalCodeCatalog()
+      reloadOwnerGroups()
+    }
+    if ((prev === 'deptFacts' || prev === 'facts') && view !== prev) {
+      invalidateLiveCaches([currentEvalKey, prevEvalKey])
+    }
+  }, [view, reloadEvalCodeCatalog, reloadOwnerGroups, invalidateLiveCaches, currentEvalKey, prevEvalKey])
+
   useEffect(() => {
     if (view === 'evalConfig') {
       reloadEvalCodeCatalog()
@@ -1190,6 +1290,7 @@ export default function App() {
                   }
                   return next
                 })
+                invalidateMetricsFromMonth(selectedYear, Math.min(effectiveMonth, selectedMonth))
                 const history = await api.listEvalConfigHistory({ year: selectedYear })
                 setEvalHistoryByYear(prev => ({ ...prev, [selectedYear]: history.items || [] }))
                 await reloadEvalYears()
@@ -1199,6 +1300,7 @@ export default function App() {
                 const saved = await api.seedEvalDefaults({ year: selectedYear, month: selectedMonth, items, changeReason: '기본값 생성' })
                 const normalized = normalizeResolvedEvalConfig(saved)
                 setResolvedEvalConfigsByMonth(prev => ({ ...prev, [currentEvalKey]: normalized }))
+                invalidateMetricsFromMonth(selectedYear, selectedMonth)
                 const history = await api.listEvalConfigHistory({ year: selectedYear })
                 setEvalHistoryByYear(prev => ({ ...prev, [selectedYear]: history.items || [] }))
                 await reloadEvalYears()
@@ -1207,6 +1309,7 @@ export default function App() {
                 const saved = await api.importEvalConfigSet({ year: selectedYear, month: selectedMonth, file })
                 const normalized = normalizeResolvedEvalConfig(saved)
                 setResolvedEvalConfigsByMonth(prev => ({ ...prev, [currentEvalKey]: normalized }))
+                invalidateMetricsFromMonth(selectedYear, selectedMonth)
                 const history = await api.listEvalConfigHistory({ year: selectedYear })
                 setEvalHistoryByYear(prev => ({ ...prev, [selectedYear]: history.items || [] }))
                 await reloadEvalYears()
@@ -1221,6 +1324,7 @@ export default function App() {
                   }
                   return next
                 })
+                invalidateMetricsFromMonth(selectedYear, effectiveMonth)
                 const [history, currentRes, prevRes] = await Promise.all([
                   api.listEvalConfigHistory({ year: selectedYear }),
                   api.listEvalConfigs({ year: selectedYear, month: selectedMonth }),
@@ -1254,6 +1358,7 @@ export default function App() {
               yearOptions={yearOptions}
               onYearChange={setSelectedYear}
               onMonthChange={setSelectedMonth}
+              onFactsMutated={() => invalidateMetricsFromMonth(selectedYear, selectedMonth)}
             />
           )}
           {view === 'users' && canAccessAdminMenu(currentUser) && (

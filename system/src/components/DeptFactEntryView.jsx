@@ -33,6 +33,7 @@ export default function DeptFactEntryView({
   yearOptions = [],
   onYearChange,
   onMonthChange,
+  onFactsMutated,
 }) {
   const isAdmin = currentUser?.role === ROLES.ADMIN
   const allowedDepts = useMemo(() => departmentsForUser(currentUser), [currentUser])
@@ -338,6 +339,7 @@ export default function DeptFactEntryView({
         + (res.counts?.rows_changed != null ? ` (변경 ${res.counts.rows_changed} · 신규 ${res.counts.rows_new})` : ''),
       )
       await load()
+      onFactsMutated?.()
     } catch (e) {
       setError(e?.data?.message || e?.message || '실적 저장 실패')
     } finally {
@@ -376,6 +378,7 @@ export default function DeptFactEntryView({
       })
       setMessage(`엑셀 반영 · ${res.counts?.rows_ok ?? 0}건`)
       await load()
+      onFactsMutated?.()
     } catch (err) {
       setError(err?.data?.message || err?.message || '엑셀 업로드 실패')
     } finally {
@@ -397,6 +400,7 @@ export default function DeptFactEntryView({
       })
       setMessage(`${selectedGroupName} 지표 확인 완료`)
       await load()
+      onFactsMutated?.()
     } catch (e) {
       setError(e?.data?.message || e?.message || '지표 확인 실패')
     } finally {
@@ -418,6 +422,7 @@ export default function DeptFactEntryView({
       })
       setMessage(`${selectedGroupName} 확인 철회`)
       await load()
+      onFactsMutated?.()
     } catch (e) {
       setError(e?.data?.message || e?.message || '확인 철회 실패')
     } finally {
@@ -437,6 +442,7 @@ export default function DeptFactEntryView({
       })
       setMessage('최종 확정(Freeze) 완료')
       await load()
+      onFactsMutated?.()
     } catch (e) {
       setError(e?.data?.message || e?.message || 'Freeze 실패')
     } finally {
@@ -456,6 +462,7 @@ export default function DeptFactEntryView({
       })
       setMessage('해동 완료')
       await load()
+      onFactsMutated?.()
     } catch (e) {
       setError(e?.data?.message || e?.message || '해동 실패')
     } finally {
