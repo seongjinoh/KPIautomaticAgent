@@ -10,6 +10,7 @@ const API_BASE = (() => {
 const IS_LOCAL_API = API_BASE === 'http://127.0.0.1:8787'
 const IS_REMOTE_API = !IS_LOCAL_API
 const NGROK_HEADERS = /ngrok/i.test(API_BASE) ? { 'ngrok-skip-browser-warning': '1' } : {}
+// Railway/Render 등 원격 API는 cold start·네트워크 지연에 대비해 재시도 (IS_REMOTE_API)
 
 /** UI/에러 메시지용 */
 const API_DISPLAY = API_BASE || (typeof window !== 'undefined' ? `${window.location.origin}/api` : '/api')

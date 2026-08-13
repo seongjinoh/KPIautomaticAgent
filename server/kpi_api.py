@@ -1946,14 +1946,38 @@ class Handler(BaseHTTPRequestHandler):
                 return
             with get_connection() as conn:
                 if path.startswith("/api/codes/lv1/") and len(parts) == 4:
-                    cur = conn.execute("DELETE FROM code_lv1 WHERE code=?", (parts[3].upper(),))
+                    code = parts[3].upper()
+                    n = conn.execute(
+                        "SELECT COUNT(*) FROM indicator_common WHERE lv1_code=?",
+                        (code,),
+                    ).fetchone()[0]
+                    if n:
+                        self.send_json({
+                            "error": "in_use",
+                            "message": f"연결된 Lv3 지표가 {n}건 있어 삭제할 수 없습니다. Lv3를 먼저 삭제하거나 다른 Lv1으로 옮기세요.",
+                            "count": int(n),
+                        }, 409)
+                        return
+                    cur = conn.execute("DELETE FROM code_lv1 WHERE code=?", (code,))
                 elif path.startswith("/api/fact-formulas/") and len(parts) == 3:
                     fid = int(parts[2])
                     conn.execute("UPDATE fact_calc SET formula_id=NULL WHERE formula_id=?", (fid,))
                     conn.execute("UPDATE eval_plan_item SET formula_id=NULL WHERE formula_id=?", (fid,))
                     cur = conn.execute("DELETE FROM fact_formula WHERE id=?", (fid,))
                 elif path.startswith("/api/codes/lv2/") and len(parts) == 4:
-                    cur = conn.execute("DELETE FROM code_lv2 WHERE code=?", (parts[3],))
+                    code = parts[3]
+                    n = conn.execute(
+                        "SELECT COUNT(*) FROM indicator_common WHERE lv2_code=?",
+                        (code,),
+                    ).fetchone()[0]
+                    if n:
+                        self.send_json({
+                            "error": "in_use",
+                            "message": f"연결된 Lv3 지표가 {n}건 있어 삭제할 수 없습니다. Lv3를 먼저 삭제하거나 다른 Lv2로 옮기세요.",
+                            "count": int(n),
+                        }, 409)
+                        return
+                    cur = conn.execute("DELETE FROM code_lv2 WHERE code=?", (code,))
                 elif path.startswith("/api/owner-groups/") and len(parts) == 3:
                     cur = conn.execute("DELETE FROM owner_group WHERE code=?", (parts[2].upper(),))
                 elif path.startswith("/api/indicators/common/") and len(parts) == 4:
@@ -1969,7 +1993,11 @@ class Handler(BaseHTTPRequestHandler):
                     return
             self.send_json({"ok": True})
         except sqlite3.IntegrityError as e:
-            self.send_json({"error": "fk_violation", "message": str(e)}, 409)
+            self.send_json({
+                "error": "fk_violation",
+                "message": "다른 데이터에서 참조 중이라 삭제할 수 없습니다.",
+                "detail": str(e),
+            }, 409)
         except ValueError as e:
             msg = str(e)
             status = 404 if "not found" in msg else 400

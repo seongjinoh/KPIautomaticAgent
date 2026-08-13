@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Search, Layers, ClipboardList, Plus, Pencil, Trash2, Upload, Download, X, Users, Link2, Calculator, Sparkles } from 'lucide-react'
 import { api } from '../lib/apiClient'
-import { findSimilarCommons, recommendLv3Classification } from '../lib/lv3Recommend'
+import { findSimilarCommons, findSimilarNamedRows, recommendLv3Classification } from '../lib/lv3Recommend'
 import { composeIndicatorCode, PERF_OPTIONS } from '../lib/codeSystem'
 import {
   isValidOperandKey,
@@ -204,32 +204,61 @@ export default function CodebookAdminView() {
       selectInCommon: !!selectInCommon,
     })
   }
-  const saveLv = async () => {
+  const removeLv = async (kind, row) => {
+    const label = kind === 'lv1' ? 'Lv1' : 'Lv2'
+    if (!window.confirm(`[${row.code}] ${row.name}\n\n연결된 Lv3가 없으면 삭제합니다. 계속할까요?`)) return
     try {
-      let createdCode = String(lvEditor.code || '').trim()
-      if (lvEditor.kind === 'lv1') {
-        if (lvEditor._new) {
-          const res = await api.createLv1({ code: lvEditor.code, name: lvEditor.name, sort_order: Number(lvEditor.sort_order) || 0 })
-          createdCode = res?.code || createdCode
-        } else {
-          await api.updateLv1(lvEditor.code, { name: lvEditor.name, sort_order: Number(lvEditor.sort_order) || 0, use_yn: lvEditor.use_yn || 'Y' })
-        }
-      } else if (lvEditor._new) {
-        const res = await api.createLv2({ code: lvEditor.code, name: lvEditor.name, sort_order: Number(lvEditor.sort_order) || 0 })
-        createdCode = res?.code || createdCode
-      } else {
-        await api.updateLv2(lvEditor.code, { name: lvEditor.name, sort_order: Number(lvEditor.sort_order) || 0, use_yn: lvEditor.use_yn || 'Y' })
-      }
-      if (lvEditor.selectInCommon && lvEditor._new && createdCode) {
-        setCommonEditor((p) => (p ? {
-          ...p,
-          ...(lvEditor.kind === 'lv1' ? { lv1_code: createdCode } : { lv2_code: createdCode }),
-        } : p))
-      }
-      note('코드체계를 저장했습니다.')
-      setLvEditor(null)
+      if (kind === 'lv1') await api.deleteLv1(row.code)
+      else await api.deleteLv2(row.code)
+      note(`${label} ${row.code}를 삭제했습니다.`)
       await reload()
     } catch (e) { fail(e) }
+  }
+
+  const saveLv = async () => {
+    try {
+      const name = String(lvEditor.name || '').trim()
+      if (!name) {
+        fail(new Error('이름을 입력해 주세요.'))
+        return
+      }
+      const list = lvEditor.kind === 'lv1' ? lv1List : lv2List
+      const hits = findSimilarNamedRows(list, name, {
+        excludeCode: lvEditor._new ? undefined : lvEditor.code,
+      })
+      if (hits.length) {
+        setDupCheck({ kind: lvEditor.kind, hits })
+        return
+      }
+      await persistLv()
+    } catch (e) { fail(e) }
+  }
+
+  const persistLv = async () => {
+    let createdCode = String(lvEditor.code || '').trim()
+    if (lvEditor.kind === 'lv1') {
+      if (lvEditor._new) {
+        const res = await api.createLv1({ code: lvEditor.code, name: lvEditor.name, sort_order: Number(lvEditor.sort_order) || 0 })
+        createdCode = res?.code || createdCode
+      } else {
+        await api.updateLv1(lvEditor.code, { name: lvEditor.name, sort_order: Number(lvEditor.sort_order) || 0, use_yn: lvEditor.use_yn || 'Y' })
+      }
+    } else if (lvEditor._new) {
+      const res = await api.createLv2({ code: lvEditor.code, name: lvEditor.name, sort_order: Number(lvEditor.sort_order) || 0 })
+      createdCode = res?.code || createdCode
+    } else {
+      await api.updateLv2(lvEditor.code, { name: lvEditor.name, sort_order: Number(lvEditor.sort_order) || 0, use_yn: lvEditor.use_yn || 'Y' })
+    }
+    if (lvEditor.selectInCommon && lvEditor._new && createdCode) {
+      setCommonEditor((p) => (p ? {
+        ...p,
+        ...(lvEditor.kind === 'lv1' ? { lv1_code: createdCode } : { lv2_code: createdCode }),
+      } : p))
+    }
+    note('코드체계를 저장했습니다.')
+    setDupCheck(null)
+    setLvEditor(null)
+    await reload()
   }
 
   /* ── common editor ── */
@@ -255,6 +284,14 @@ export default function CodebookAdminView() {
     if (!commonEditor?._new) return []
     return findSimilarCommons(commons, commonEditor.name)
   }, [commonEditor, commons])
+
+  const similarLvLive = useMemo(() => {
+    if (!lvEditor) return []
+    const list = lvEditor.kind === 'lv1' ? lv1List : lv2List
+    return findSimilarNamedRows(list, lvEditor.name, {
+      excludeCode: lvEditor._new ? undefined : lvEditor.code,
+    })
+  }, [lvEditor, lv1List, lv2List])
 
   const persistCommon = async () => {
     const defs = pickLv3DefinitionFromRow(commonEditor)
@@ -286,7 +323,7 @@ export default function CodebookAdminView() {
       if (commonEditor._new) {
         const hits = findSimilarCommons(commons, commonEditor.name)
         if (hits.length) {
-          setDupCheck({ hits })
+          setDupCheck({ kind: 'lv3', hits })
           return
         }
       }
@@ -296,7 +333,8 @@ export default function CodebookAdminView() {
 
   const confirmDupAndSave = async () => {
     try {
-      await persistCommon()
+      if (dupCheck?.kind === 'lv1' || dupCheck?.kind === 'lv2') await persistLv()
+      else await persistCommon()
     } catch (e) { fail(e) }
   }
 
@@ -669,7 +707,9 @@ export default function CodebookAdminView() {
           </div>
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
             <div className="rounded-xl border border-slate-200 bg-white overflow-hidden shadow-sm">
-              <div className="px-4 py-2.5 bg-emerald-800 text-white text-xs font-semibold">Lv1 대분류 ({lv1List.length})</div>
+              <div className="px-4 py-2.5 bg-emerald-800 text-white text-xs font-semibold">
+                Lv1 대분류 ({lv1List.length})
+              </div>
               <div className="overflow-x-auto max-h-[60vh]">
                 <table className="w-full text-left text-xs">
                   <thead><tr className="bg-slate-50 sticky top-0"><th className="px-3 py-2">코드</th><th className="px-3 py-2">이름</th><th className="px-3 py-2 text-center">관리</th></tr></thead>
@@ -679,8 +719,8 @@ export default function CodebookAdminView() {
                         <td className="px-3 py-1.5 font-mono text-violet-700">{r.code}</td>
                         <td className="px-3 py-1.5">{r.name}</td>
                         <td className="px-3 py-1.5 text-center">
-                          <button onClick={() => setLvEditor({ kind: 'lv1', ...r })} className="p-1 rounded hover:bg-slate-100"><Pencil className="w-3.5 h-3.5" /></button>
-                          <button onClick={async () => { if (!window.confirm(`[${r.code}] 미사용 처리?`)) return; try { await api.updateLv1(r.code, { name: r.name, sort_order: r.sort_order, use_yn: 'N' }); note('미사용 처리됨'); await reload() } catch (e) { fail(e) } }} className="p-1 rounded hover:bg-amber-50 text-amber-700" title="미사용"><Trash2 className="w-3.5 h-3.5" /></button>
+                          <button onClick={() => setLvEditor({ kind: 'lv1', ...r })} className="p-1 rounded hover:bg-slate-100" title="수정"><Pencil className="w-3.5 h-3.5" /></button>
+                          <button onClick={() => removeLv('lv1', r)} className="p-1 rounded hover:bg-rose-50 text-rose-600" title="삭제"><Trash2 className="w-3.5 h-3.5" /></button>
                         </td>
                       </tr>
                     ))}
@@ -689,7 +729,9 @@ export default function CodebookAdminView() {
               </div>
             </div>
             <div className="rounded-xl border border-slate-200 bg-white overflow-hidden shadow-sm">
-              <div className="px-4 py-2.5 bg-violet-800 text-white text-xs font-semibold">Lv2 중분류 ({lv2List.length})</div>
+              <div className="px-4 py-2.5 bg-violet-800 text-white text-xs font-semibold">
+                Lv2 중분류 ({lv2Options.length})
+              </div>
               <div className="overflow-x-auto max-h-[60vh]">
                 <table className="w-full text-left text-xs">
                   <thead><tr className="bg-slate-50 sticky top-0"><th className="px-3 py-2">코드</th><th className="px-3 py-2">이름</th><th className="px-3 py-2 text-center">관리</th></tr></thead>
@@ -699,8 +741,8 @@ export default function CodebookAdminView() {
                         <td className="px-3 py-1.5 font-mono text-violet-700">{r.code}</td>
                         <td className="px-3 py-1.5">{r.name}</td>
                         <td className="px-3 py-1.5 text-center">
-                          <button onClick={() => setLvEditor({ kind: 'lv2', ...r })} className="p-1 rounded hover:bg-slate-100"><Pencil className="w-3.5 h-3.5" /></button>
-                          <button onClick={async () => { if (!window.confirm(`[${r.code}] 미사용 처리?`)) return; try { await api.updateLv2(r.code, { name: r.name, sort_order: r.sort_order, use_yn: 'N' }); note('미사용 처리됨'); await reload() } catch (e) { fail(e) } }} className="p-1 rounded hover:bg-amber-50 text-amber-700" title="미사용"><Trash2 className="w-3.5 h-3.5" /></button>
+                          <button onClick={() => setLvEditor({ kind: 'lv2', ...r })} className="p-1 rounded hover:bg-slate-100" title="수정"><Pencil className="w-3.5 h-3.5" /></button>
+                          <button onClick={() => removeLv('lv2', r)} className="p-1 rounded hover:bg-rose-50 text-rose-600" title="삭제"><Trash2 className="w-3.5 h-3.5" /></button>
                         </td>
                       </tr>
                     ))}
@@ -949,7 +991,7 @@ export default function CodebookAdminView() {
       {lvEditor && (
         <Modal
           title={lvEditor._new ? `${lvEditor.kind.toUpperCase()} 추가` : `${lvEditor.kind.toUpperCase()} 수정`}
-          onClose={() => setLvEditor(null)}
+          onClose={() => { setDupCheck(null); setLvEditor(null) }}
           onSave={saveLv}
           stacked={!!commonEditor}
         >
@@ -963,39 +1005,60 @@ export default function CodebookAdminView() {
               title={lvEditor.kind === 'lv2' && lvEditor._new ? '기존 최대값+1로 전역 유일 배정' : undefined}
             />
           </Field>
-          <Field label="이름"><input value={lvEditor.name} onChange={e => setLvEditor(p => ({ ...p, name: e.target.value }))} className="input" /></Field>
+          <Field label="이름">
+            <input value={lvEditor.name} onChange={e => setLvEditor(p => ({ ...p, name: e.target.value }))} className="input" />
+          </Field>
+          {similarLvLive.length > 0 && (
+            <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-900">
+              <p className="font-semibold">비슷한 이름 {similarLvLive.length}건이 이미 있습니다.</p>
+              <ul className="mt-1 space-y-0.5">
+                {similarLvLive.slice(0, 4).map((r) => (
+                  <li key={r.code}>
+                    <span className="font-mono">{r.code}</span>
+                    {' · '}{r.name}
+                    <span className="text-amber-700"> ({Math.round((r.similarScore || 0) * 100)}%)</span>
+                  </li>
+                ))}
+              </ul>
+              <p className="mt-0.5 text-amber-700">저장하면 계속 진행할지 한 번 더 묻습니다.</p>
+            </div>
+          )}
           <Field label="정렬"><input type="number" value={lvEditor.sort_order ?? 0} onChange={e => setLvEditor(p => ({ ...p, sort_order: e.target.value }))} className="input" /></Field>
         </Modal>
       )}
 
       {dupCheck && (
         <Modal
-          title="비슷한 지표가 이미 있습니다"
+          title={
+            dupCheck.kind === 'lv3'
+              ? '비슷한 지표가 이미 있습니다'
+              : `비슷한 ${String(dupCheck.kind || '').toUpperCase()} 이름이 이미 있습니다`
+          }
           onClose={() => setDupCheck(null)}
           onSave={confirmDupAndSave}
           stacked="top"
-          saveLabel="그래도 추가"
+          saveLabel="그래도 진행"
           cancelLabel="돌아가기"
         >
           <p className="text-sm text-slate-700">
-            아래 지표와 이름이 비슷합니다. 중복이 아니면 <span className="font-semibold">그래도 추가</span>를 누르세요.
+            아래와 이름이 비슷합니다. 중복이 아니면 <span className="font-semibold">그래도 진행</span>을 누르세요.
           </p>
           <div className="max-h-64 overflow-auto rounded-lg border border-amber-200 bg-amber-50/70">
             <table className="w-full text-left text-xs">
               <thead>
                 <tr className="bg-amber-100 text-amber-900">
                   <th className="px-2 py-1.5">코드</th>
-                  <th className="px-2 py-1.5">지표명</th>
-                  <th className="px-2 py-1.5">단위</th>
+                  <th className="px-2 py-1.5">이름</th>
+                  {dupCheck.kind === 'lv3' ? <th className="px-2 py-1.5">단위</th> : null}
                   <th className="px-2 py-1.5">유사</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-amber-100">
                 {dupCheck.hits.map((r) => (
-                  <tr key={r.common_code}>
-                    <td className="px-2 py-1.5 font-mono whitespace-nowrap">{r.common_code}</td>
+                  <tr key={r.common_code || r.code}>
+                    <td className="px-2 py-1.5 font-mono whitespace-nowrap">{r.common_code || r.code}</td>
                     <td className="px-2 py-1.5">{r.name}</td>
-                    <td className="px-2 py-1.5">{r.unit || '—'}</td>
+                    {dupCheck.kind === 'lv3' ? <td className="px-2 py-1.5">{r.unit || '—'}</td> : null}
                     <td className="px-2 py-1.5">{Math.round((r.similarScore || 0) * 100)}%</td>
                   </tr>
                 ))}

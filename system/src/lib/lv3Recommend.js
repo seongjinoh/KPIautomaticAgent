@@ -22,13 +22,19 @@ function dice(a, b) {
   return (2 * inter) / (A.size + B.size)
 }
 
-/** 기존 Lv3 중 이름이 비슷한 항목. 추가 전 중복 확인용. */
-export function findSimilarCommons(commons, name, { limit = 8, minScore = 0.55, excludeCode } = {}) {
+/** 이름이 비슷한 마스터 행 (Lv1/Lv2/Lv3 공통). UNIQUE가 아니라 저장 전 확인용. */
+export function findSimilarNamedRows(rows, name, {
+  limit = 8,
+  minScore = 0.55,
+  excludeCode,
+  codeKey = 'code',
+} = {}) {
   const q = normalizeIndicatorName(name)
   if (q.length < 2) return []
   const scored = []
-  for (const row of commons || []) {
-    if (excludeCode && row.common_code === excludeCode) continue
+  for (const row of rows || []) {
+    const code = row?.[codeKey]
+    if (excludeCode != null && String(code) === String(excludeCode)) continue
     if ((row.use_yn || 'Y') === 'N') continue
     const n = normalizeIndicatorName(row.name)
     if (!n) continue
@@ -37,8 +43,16 @@ export function findSimilarCommons(commons, name, { limit = 8, minScore = 0.55, 
     else if (n.includes(q) || q.includes(n)) score = Math.max(score, 0.86)
     if (score >= minScore) scored.push({ ...row, similarScore: score })
   }
-  scored.sort((a, b) => b.similarScore - a.similarScore || String(a.common_code).localeCompare(String(b.common_code)))
+  scored.sort((a, b) => (
+    b.similarScore - a.similarScore
+    || String(a[codeKey] || '').localeCompare(String(b[codeKey] || ''), 'ko')
+  ))
   return scored.slice(0, limit)
+}
+
+/** 기존 Lv3 중 이름이 비슷한 항목. 추가 전 중복 확인용. */
+export function findSimilarCommons(commons, name, opts = {}) {
+  return findSimilarNamedRows(commons, name, { ...opts, codeKey: 'common_code' })
 }
 
 function parseJsonFromLlm(text) {
