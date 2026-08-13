@@ -36,6 +36,33 @@ function summarizeOperands(ops) {
   return entries.map(([k, v]) => `${k}=${v}`).join(', ')
 }
 
+const CODEBOOK_SORT_MODES = [
+  { id: 'order', label: '기본순', title: '저장된 표시순서' },
+  { id: 'code_asc', label: '코드↑', title: '코드 오름차순 (ABC/가나다)' },
+  { id: 'code_desc', label: '코드↓', title: '코드 내림차순' },
+  { id: 'name_asc', label: '이름↑', title: '이름 오름차순 (ABC/가나다)' },
+  { id: 'name_desc', label: '이름↓', title: '이름 내림차순' },
+]
+
+function sortCodebookRows(rows, mode, { codeKey = 'code', nameKey = 'name' } = {}) {
+  const list = [...(rows || [])]
+  const cmp = (a, b) => String(a || '').localeCompare(String(b || ''), 'ko', { numeric: true, sensitivity: 'base' })
+  switch (mode) {
+    case 'code_asc':
+      return list.sort((a, b) => cmp(a[codeKey], b[codeKey]))
+    case 'code_desc':
+      return list.sort((a, b) => cmp(b[codeKey], a[codeKey]))
+    case 'name_asc':
+      return list.sort((a, b) => cmp(a[nameKey], b[nameKey]) || cmp(a[codeKey], b[codeKey]))
+    case 'name_desc':
+      return list.sort((a, b) => cmp(b[nameKey], a[nameKey]) || cmp(a[codeKey], b[codeKey]))
+    default:
+      return list.sort((a, b) =>
+        Number(a.sort_order ?? 0) - Number(b.sort_order ?? 0) || cmp(a[codeKey], b[codeKey]),
+      )
+  }
+}
+
 export default function CodebookAdminView() {
   const [tab, setTab] = useState('groups')
   const [feedback, setFeedback] = useState('')
@@ -53,6 +80,12 @@ export default function CodebookAdminView() {
 
   const fileInputRef = useRef(null)
   const [showInactive, setShowInactive] = useState(false)
+  const [listSort, setListSort] = useState({
+    structure_lv1: 'order',
+    structure_lv2: 'order',
+    common: 'order',
+    codes: 'order',
+  })
 
   const codeGroups = useMemo(() => filterCodeGroups(groups), [groups])
   const evalGroups = useMemo(() => filterEvalGroups(groups), [groups])
@@ -311,12 +344,34 @@ export default function CodebookAdminView() {
   }, [commonEditor])
 
   /** Lv2는 Lv1과 독립 — 전체 목록을 그대로 사용 */
-  const lv2Options = useMemo(() => {
-    return [...(lv2List || [])].sort((a, b) =>
-      Number(a.sort_order ?? 0) - Number(b.sort_order ?? 0)
-      || String(a.code).localeCompare(String(b.code), 'ko'),
-    )
-  }, [lv2List])
+  const lv2Options = useMemo(
+    () => sortCodebookRows(lv2List, 'order', { codeKey: 'code', nameKey: 'name' }),
+    [lv2List],
+  )
+  const lv1OrderRows = useMemo(
+    () => sortCodebookRows(lv1List, 'order', { codeKey: 'code', nameKey: 'name' }),
+    [lv1List],
+  )
+  const sortedLv1List = useMemo(
+    () => sortCodebookRows(lv1List, listSort.structure_lv1, { codeKey: 'code', nameKey: 'name' }),
+    [lv1List, listSort.structure_lv1],
+  )
+  const sortedLv2Options = useMemo(
+    () => sortCodebookRows(lv2Options, listSort.structure_lv2, { codeKey: 'code', nameKey: 'name' }),
+    [lv2Options, listSort.structure_lv2],
+  )
+  const commonsOrderRows = useMemo(
+    () => sortCodebookRows(commons, 'order', { codeKey: 'common_code', nameKey: 'name' }),
+    [commons],
+  )
+  const sortedCommons = useMemo(
+    () => sortCodebookRows(commons, listSort.common, { codeKey: 'common_code', nameKey: 'name' }),
+    [commons, listSort.common],
+  )
+  const codesOrderRows = useMemo(
+    () => sortCodebookRows(codes, 'order', { codeKey: 'indicator_code', nameKey: 'display_name' }),
+    [codes],
+  )
 
   const similarLive = useMemo(() => {
     if (!commonEditor?._new) return []
@@ -442,6 +497,10 @@ export default function CodebookAdminView() {
         .filter(Boolean).join(' ').toLowerCase().includes(s)
     )
   }, [codes, codeQ, codeGroupFilter])
+  const sortedFilteredCodes = useMemo(
+    () => sortCodebookRows(filteredCodes, listSort.codes, { codeKey: 'indicator_code', nameKey: 'display_name' }),
+    [filteredCodes, listSort.codes],
+  )
 
   const saveCode = async () => {
     try {
@@ -590,7 +649,7 @@ export default function CodebookAdminView() {
   const TABS = [
     { id: 'groups', icon: <Users className="w-4 h-4" />, label: '그룹·본부' },
     { id: 'structure', icon: <Layers className="w-4 h-4" />, label: 'Category·지표Seg' },
-    { id: 'common', icon: <ClipboardList className="w-4 h-4" />, label: 'Lv3' },
+    { id: 'common', icon: <ClipboardList className="w-4 h-4" />, label: '지표 초안 작성' },
     { id: 'codes', icon: <Link2 className="w-4 h-4" />, label: '지표마스터' },
     { id: 'formulas', icon: <Calculator className="w-4 h-4" />, label: '가공식' },
   ]
@@ -745,48 +804,67 @@ export default function CodebookAdminView() {
             같은 지표Seg 코드는 전역에서 동일한 의미이며, Lv3에서 임의의 Category×지표Seg 조합이 가능합니다.
             예: 슈퍼SOL(지표Seg) + 신규가입(Lv3)을 전행·좌수 / 영업점·Point로 나눠 배정.
           </p>
-          <div className="flex gap-2">
-            <button onClick={() => openLv1Create(false)} className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-emerald-700 text-white text-sm"><Plus className="w-4 h-4" /> Category 추가</button>
-            <button onClick={() => openLv2Create(false)} className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-violet-600 text-white text-sm"><Plus className="w-4 h-4" /> 지표Seg 추가</button>
+          <div className="flex flex-wrap gap-2 items-center justify-between">
+            <div className="flex gap-2">
+              <button onClick={() => openLv1Create(false)} className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-emerald-700 text-white text-sm"><Plus className="w-4 h-4" /> Category 추가</button>
+              <button onClick={() => openLv2Create(false)} className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-violet-600 text-white text-sm"><Plus className="w-4 h-4" /> 지표Seg 추가</button>
+            </div>
           </div>
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 items-start">
             <div className="rounded-xl border border-slate-200 bg-white overflow-hidden shadow-sm self-start w-full">
-              <div className="px-4 py-2.5 bg-emerald-800 text-white text-xs font-semibold">
-                Category ({lv1List.length})
+              <div className="px-4 py-2.5 bg-emerald-800 text-white text-xs font-semibold flex flex-wrap items-center justify-between gap-2">
+                <span>Category ({lv1List.length})</span>
+                <CodebookSortBar
+                  value={listSort.structure_lv1}
+                  onChange={(mode) => setListSort((p) => ({ ...p, structure_lv1: mode }))}
+                  light
+                />
               </div>
               <div className="overflow-x-auto max-h-[60vh]">
                 <table className="w-full text-left text-xs">
                   <thead><tr className="bg-slate-50 sticky top-0"><th className="px-3 py-2">코드</th><th className="px-3 py-2">이름</th><th className="px-3 py-2 text-center">관리</th></tr></thead>
                   <tbody className="divide-y divide-slate-100">
-                    {lv1List.map((r, index) => (
+                    {sortedLv1List.map((r) => {
+                      const orderIndex = lv1OrderRows.findIndex((row) => row.code === r.code)
+                      return (
                       <tr key={r.code}>
                         <td className="px-3 py-1.5 font-mono text-violet-700">{r.code}</td>
                         <td className="px-3 py-1.5">{r.name}</td>
                         <td className="px-3 py-1.5 text-center">
-                          <CodebookOrderButtons index={index} total={lv1List.length} onMove={(direction) => moveCodebookRow('lv1', r, direction)} />
+                          <CodebookOrderButtons
+                            index={orderIndex}
+                            total={lv1OrderRows.length}
+                            disabled={listSort.structure_lv1 !== 'order'}
+                            onMove={(direction) => moveCodebookRow('lv1', r, direction)}
+                          />
                           <button onClick={() => setLvEditor({ kind: 'lv1', ...r })} className="p-1 rounded hover:bg-slate-100" title="수정"><Pencil className="w-3.5 h-3.5" /></button>
                           <button onClick={() => removeLv('lv1', r)} className="p-1 rounded hover:bg-rose-50 text-rose-600" title="삭제"><Trash2 className="w-3.5 h-3.5" /></button>
                         </td>
                       </tr>
-                    ))}
+                      )
+                    })}
                   </tbody>
                 </table>
               </div>
             </div>
             <div className="rounded-xl border border-slate-200 bg-white overflow-hidden shadow-sm self-start w-full">
-              <div className="px-4 py-2.5 bg-violet-800 text-white text-xs font-semibold">
-                지표Seg ({lv2Options.length})
+              <div className="px-4 py-2.5 bg-violet-800 text-white text-xs font-semibold flex flex-wrap items-center justify-between gap-2">
+                <span>지표Seg ({lv2Options.length})</span>
+                <CodebookSortBar
+                  value={listSort.structure_lv2}
+                  onChange={(mode) => setListSort((p) => ({ ...p, structure_lv2: mode }))}
+                  light
+                />
               </div>
               <div className="overflow-x-auto max-h-[60vh]">
                 <table className="w-full text-left text-xs">
                   <thead><tr className="bg-slate-50 sticky top-0"><th className="px-3 py-2">코드</th><th className="px-3 py-2">이름</th><th className="px-3 py-2 text-center">관리</th></tr></thead>
                   <tbody className="divide-y divide-slate-100">
-                    {lv2Options.map((r, index) => (
+                    {sortedLv2Options.map((r) => (
                       <tr key={r.code}>
                         <td className="px-3 py-1.5 font-mono text-violet-700">{r.code}</td>
                         <td className="px-3 py-1.5">{r.name}</td>
                         <td className="px-3 py-1.5 text-center">
-                          <CodebookOrderButtons index={index} total={lv2Options.length} onMove={(direction) => moveCodebookRow('lv2', r, direction)} />
                           <button onClick={() => setLvEditor({ kind: 'lv2', ...r })} className="p-1 rounded hover:bg-slate-100" title="수정"><Pencil className="w-3.5 h-3.5" /></button>
                           <button onClick={() => removeLv('lv2', r)} className="p-1 rounded hover:bg-rose-50 text-rose-600" title="삭제"><Trash2 className="w-3.5 h-3.5" /></button>
                         </td>
@@ -802,6 +880,7 @@ export default function CodebookAdminView() {
 
       {tab === 'common' && (
         <div className="space-y-3">
+          <div className="flex flex-wrap items-center gap-3 justify-between">
           <button onClick={async () => {
             let lv3 = ''
             try {
@@ -818,14 +897,20 @@ export default function CodebookAdminView() {
               ...emptyLv3Definition(),
             })
           }} className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-violet-600 text-white text-sm">
-            <Plus className="w-4 h-4" /> Lv3 추가
+            <Plus className="w-4 h-4" /> 지표 초안 추가
           </button>
+          <CodebookSortBar
+            value={listSort.common}
+            onChange={(mode) => setListSort((p) => ({ ...p, common: mode }))}
+          />
+          </div>
           <div className="rounded-xl border border-slate-200 bg-white overflow-hidden shadow-sm">
             <div className="overflow-x-auto max-h-[60vh]">
               <table className="w-full text-left text-xs">
-                <thead><tr className="bg-red-800 text-white sticky top-0">{['Lv3코드', 'Category', '지표Seg', 'Lv3', '지표명', '단위', '정의', '관리'].map(h => <th key={h} className="px-2 py-2 whitespace-nowrap">{h}</th>)}</tr></thead>
+                <thead><tr className="bg-red-800 text-white sticky top-0">{['원시코드', 'Category', '지표Seg', '지표번호', '지표명', '단위', '정의', '관리'].map(h => <th key={h} className="px-2 py-2 whitespace-nowrap">{h}</th>)}</tr></thead>
                 <tbody className="divide-y divide-slate-100">
-                  {commons.map((r, index) => {
+                  {sortedCommons.map((r) => {
+                    const orderIndex = commonsOrderRows.findIndex((row) => row.common_code === r.common_code)
                     const filled = LV3_DEFINITION_FIELDS.filter(f => String(r[f] || '').trim()).length
                     return (
                       <tr key={r.common_code} className="hover:bg-slate-50/80">
@@ -839,7 +924,12 @@ export default function CodebookAdminView() {
                           <DefinitionBadge filled={filled} total={LV3_DEFINITION_FIELDS.length} />
                         </td>
                         <td className="px-2 py-1.5">
-                          <CodebookOrderButtons index={index} total={commons.length} onMove={(direction) => moveCodebookRow('common', r, direction)} />
+                          <CodebookOrderButtons
+                            index={orderIndex}
+                            total={commonsOrderRows.length}
+                            disabled={listSort.common !== 'order'}
+                            onMove={(direction) => moveCodebookRow('common', r, direction)}
+                          />
                           <button onClick={() => setCommonEditor({ ...emptyLv3Definition(), ...r })} className="p-1 rounded hover:bg-slate-100"><Pencil className="w-3.5 h-3.5" /></button>
                           <button onClick={() => removeCommon(r)} className="p-1 rounded hover:bg-rose-50 text-rose-600" title="삭제"><Trash2 className="w-3.5 h-3.5" /></button>
                         </td>
@@ -874,13 +964,19 @@ export default function CodebookAdminView() {
             })} className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-violet-600 text-white text-sm">
               <Plus className="w-4 h-4" /> 지표마스터 추가
             </button>
+            <CodebookSortBar
+              value={listSort.codes}
+              onChange={(mode) => setListSort((p) => ({ ...p, codes: mode }))}
+            />
           </div>
           <div className="rounded-xl border border-slate-200 bg-white overflow-hidden shadow-sm">
             <div className="overflow-x-auto max-h-[60vh]">
               <table className="w-full text-left text-xs">
                 <thead><tr className="bg-red-800 text-white sticky top-0">{['지표코드', 'Lv3', '그룹', '실적', '표시명', '상세정의', '관리'].map(h => <th key={h} className="px-2 py-2 whitespace-nowrap">{h}</th>)}</tr></thead>
                 <tbody className="divide-y divide-slate-100">
-                  {filteredCodes.map(r => (
+                  {sortedFilteredCodes.map(r => {
+                    const orderIndex = codesOrderRows.findIndex((item) => item.indicator_code === r.indicator_code)
+                    return (
                     <tr key={r.indicator_code} className="hover:bg-slate-50/80">
                       <td className="px-2 py-1.5 font-mono text-[11px]">{r.indicator_code}</td>
                       <td className="px-2 py-1.5 font-mono text-[10px]">{r.common_code}</td>
@@ -894,8 +990,9 @@ export default function CodebookAdminView() {
                       </td>
                       <td className="px-2 py-1.5">
                         <CodebookOrderButtons
-                          index={codes.findIndex((item) => item.indicator_code === r.indicator_code)}
-                          total={codes.length}
+                          index={orderIndex}
+                          total={codesOrderRows.length}
+                          disabled={listSort.codes !== 'order'}
                           onMove={(direction) => moveCodebookRow('code', r, direction)}
                         />
                         <button onClick={() => setCodeEditor({
@@ -907,7 +1004,8 @@ export default function CodebookAdminView() {
                         <button onClick={() => removeCode(r)} className="p-1 rounded hover:bg-rose-50 text-rose-600" title="삭제"><Trash2 className="w-3.5 h-3.5" /></button>
                       </td>
                     </tr>
-                  ))}
+                    )
+                  })}
                 </tbody>
               </table>
             </div>
@@ -1117,7 +1215,7 @@ export default function CodebookAdminView() {
       )}
 
       {commonEditor && (
-        <Modal title={commonEditor._new ? 'Lv3 추가' : `Lv3 ${commonEditor.common_code}`} onClose={() => { setDupCheck(null); setCommonEditor(null) }} onSave={saveCommon} wide>
+        <Modal title={commonEditor._new ? '지표 초안 추가' : `지표 초안 ${commonEditor.common_code}`} onClose={() => { setDupCheck(null); setCommonEditor(null) }} onSave={saveCommon} wide>
           <div className="text-xs text-slate-600 space-y-1">
             <span className="block">지표명</span>
             <div className="flex gap-2">
@@ -1518,24 +1616,54 @@ function OperandNameInput({ name, operands, onRename, onError }) {
   )
 }
 
-function CodebookOrderButtons({ index, total, onMove }) {
+function CodebookSortBar({ value = 'order', onChange, light = false }) {
   return (
-    <span className="mr-1 inline-flex items-center gap-0.5 align-middle">
+    <div className={`flex flex-wrap items-center gap-1 ${light ? '' : ''}`}>
+      {!light && <span className="text-[11px] text-slate-500 mr-0.5">정렬</span>}
+      {CODEBOOK_SORT_MODES.map((mode) => {
+        const active = value === mode.id
+        return (
+          <button
+            key={mode.id}
+            type="button"
+            title={mode.title}
+            onClick={() => onChange?.(mode.id)}
+            className={`rounded px-1.5 py-0.5 text-[10px] font-medium transition-colors ${
+              active
+                ? light
+                  ? 'bg-white/20 text-white ring-1 ring-white/40'
+                  : 'bg-violet-100 text-violet-800 ring-1 ring-violet-200'
+                : light
+                  ? 'text-white/80 hover:bg-white/10'
+                  : 'text-slate-600 hover:bg-slate-100'
+            }`}
+          >
+            {mode.label}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
+function CodebookOrderButtons({ index, total, onMove, disabled = false }) {
+  return (
+    <span className={`mr-1 inline-flex items-center gap-0.5 align-middle ${disabled ? 'opacity-30' : ''}`}>
       <button
         type="button"
-        disabled={index <= 0}
+        disabled={disabled || index <= 0}
         onClick={() => onMove(-1)}
         className="rounded p-0.5 text-slate-500 hover:bg-slate-100 disabled:cursor-default disabled:opacity-25"
-        title="위로"
+        title={disabled ? '기본순에서만 순서 변경' : '위로'}
       >
         <ArrowUp className="h-3.5 w-3.5" />
       </button>
       <button
         type="button"
-        disabled={index < 0 || index >= total - 1}
+        disabled={disabled || index < 0 || index >= total - 1}
         onClick={() => onMove(1)}
         className="rounded p-0.5 text-slate-500 hover:bg-slate-100 disabled:cursor-default disabled:opacity-25"
-        title="아래로"
+        title={disabled ? '기본순에서만 순서 변경' : '아래로'}
       >
         <ArrowDown className="h-3.5 w-3.5" />
       </button>
