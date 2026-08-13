@@ -36,13 +36,12 @@ function summarizeOperands(ops) {
   return entries.map(([k, v]) => `${k}=${v}`).join(', ')
 }
 
-const CODEBOOK_SORT_MODES = [
-  { id: 'order', label: '기본순', title: '저장된 표시순서' },
-  { id: 'code_asc', label: '코드↑', title: '코드 오름차순 (ABC/가나다)' },
-  { id: 'code_desc', label: '코드↓', title: '코드 내림차순' },
-  { id: 'name_asc', label: '이름↑', title: '이름 오름차순 (ABC/가나다)' },
-  { id: 'name_desc', label: '이름↓', title: '이름 내림차순' },
-]
+/** 컬럼 헤더 클릭: 기본순 → 오름차순 → 내림차순 → 기본순 */
+function nextCodebookSortMode(current, field) {
+  if (current === `${field}_asc`) return `${field}_desc`
+  if (current === `${field}_desc`) return 'order'
+  return `${field}_asc`
+}
 
 function sortCodebookRows(rows, mode, { codeKey = 'code', nameKey = 'name' } = {}) {
   const list = [...(rows || [])]
@@ -812,17 +811,30 @@ export default function CodebookAdminView() {
           </div>
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 items-start">
             <div className="rounded-xl border border-slate-200 bg-white overflow-hidden shadow-sm self-start w-full">
-              <div className="px-4 py-2.5 bg-emerald-800 text-white text-xs font-semibold flex flex-wrap items-center justify-between gap-2">
-                <span>Category ({lv1List.length})</span>
-                <CodebookSortBar
-                  value={listSort.structure_lv1}
-                  onChange={(mode) => setListSort((p) => ({ ...p, structure_lv1: mode }))}
-                  light
-                />
+              <div className="px-4 py-2.5 bg-emerald-800 text-white text-xs font-semibold">
+                Category ({lv1List.length})
               </div>
               <div className="overflow-x-auto max-h-[60vh]">
                 <table className="w-full text-left text-xs">
-                  <thead><tr className="bg-slate-50 sticky top-0"><th className="px-3 py-2">코드</th><th className="px-3 py-2">이름</th><th className="px-3 py-2 text-center">관리</th></tr></thead>
+                  <thead>
+                    <tr className="bg-slate-50 sticky top-0">
+                      <SortableTh
+                        label="코드"
+                        field="code"
+                        value={listSort.structure_lv1}
+                        onChange={(mode) => setListSort((p) => ({ ...p, structure_lv1: mode }))}
+                        className="px-3 py-2"
+                      />
+                      <SortableTh
+                        label="이름"
+                        field="name"
+                        value={listSort.structure_lv1}
+                        onChange={(mode) => setListSort((p) => ({ ...p, structure_lv1: mode }))}
+                        className="px-3 py-2"
+                      />
+                      <th className="px-3 py-2 text-center">관리</th>
+                    </tr>
+                  </thead>
                   <tbody className="divide-y divide-slate-100">
                     {sortedLv1List.map((r) => {
                       const orderIndex = lv1OrderRows.findIndex((row) => row.code === r.code)
@@ -848,17 +860,30 @@ export default function CodebookAdminView() {
               </div>
             </div>
             <div className="rounded-xl border border-slate-200 bg-white overflow-hidden shadow-sm self-start w-full">
-              <div className="px-4 py-2.5 bg-violet-800 text-white text-xs font-semibold flex flex-wrap items-center justify-between gap-2">
-                <span>지표Seg ({lv2Options.length})</span>
-                <CodebookSortBar
-                  value={listSort.structure_lv2}
-                  onChange={(mode) => setListSort((p) => ({ ...p, structure_lv2: mode }))}
-                  light
-                />
+              <div className="px-4 py-2.5 bg-violet-800 text-white text-xs font-semibold">
+                지표Seg ({lv2Options.length})
               </div>
               <div className="overflow-x-auto max-h-[60vh]">
                 <table className="w-full text-left text-xs">
-                  <thead><tr className="bg-slate-50 sticky top-0"><th className="px-3 py-2">코드</th><th className="px-3 py-2">이름</th><th className="px-3 py-2 text-center">관리</th></tr></thead>
+                  <thead>
+                    <tr className="bg-slate-50 sticky top-0">
+                      <SortableTh
+                        label="코드"
+                        field="code"
+                        value={listSort.structure_lv2}
+                        onChange={(mode) => setListSort((p) => ({ ...p, structure_lv2: mode }))}
+                        className="px-3 py-2"
+                      />
+                      <SortableTh
+                        label="이름"
+                        field="name"
+                        value={listSort.structure_lv2}
+                        onChange={(mode) => setListSort((p) => ({ ...p, structure_lv2: mode }))}
+                        className="px-3 py-2"
+                      />
+                      <th className="px-3 py-2 text-center">관리</th>
+                    </tr>
+                  </thead>
                   <tbody className="divide-y divide-slate-100">
                     {sortedLv2Options.map((r) => (
                       <tr key={r.code}>
@@ -899,15 +924,34 @@ export default function CodebookAdminView() {
           }} className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-violet-600 text-white text-sm">
             <Plus className="w-4 h-4" /> 지표 초안 추가
           </button>
-          <CodebookSortBar
-            value={listSort.common}
-            onChange={(mode) => setListSort((p) => ({ ...p, common: mode }))}
-          />
           </div>
           <div className="rounded-xl border border-slate-200 bg-white overflow-hidden shadow-sm">
             <div className="overflow-x-auto max-h-[60vh]">
               <table className="w-full text-left text-xs">
-                <thead><tr className="bg-red-800 text-white sticky top-0">{['원시코드', 'Category', '지표Seg', '지표번호', '지표명', '단위', '정의', '관리'].map(h => <th key={h} className="px-2 py-2 whitespace-nowrap">{h}</th>)}</tr></thead>
+                <thead>
+                  <tr className="bg-red-800 text-white sticky top-0">
+                    <SortableTh
+                      label="원시코드"
+                      field="code"
+                      value={listSort.common}
+                      onChange={(mode) => setListSort((p) => ({ ...p, common: mode }))}
+                      light
+                    />
+                    <th className="px-2 py-2 whitespace-nowrap">Category</th>
+                    <th className="px-2 py-2 whitespace-nowrap">지표Seg</th>
+                    <th className="px-2 py-2 whitespace-nowrap">지표번호</th>
+                    <SortableTh
+                      label="지표명"
+                      field="name"
+                      value={listSort.common}
+                      onChange={(mode) => setListSort((p) => ({ ...p, common: mode }))}
+                      light
+                    />
+                    <th className="px-2 py-2 whitespace-nowrap">단위</th>
+                    <th className="px-2 py-2 whitespace-nowrap">정의</th>
+                    <th className="px-2 py-2 whitespace-nowrap">관리</th>
+                  </tr>
+                </thead>
                 <tbody className="divide-y divide-slate-100">
                   {sortedCommons.map((r) => {
                     const orderIndex = commonsOrderRows.findIndex((row) => row.common_code === r.common_code)
@@ -964,15 +1008,33 @@ export default function CodebookAdminView() {
             })} className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-violet-600 text-white text-sm">
               <Plus className="w-4 h-4" /> 지표마스터 추가
             </button>
-            <CodebookSortBar
-              value={listSort.codes}
-              onChange={(mode) => setListSort((p) => ({ ...p, codes: mode }))}
-            />
           </div>
           <div className="rounded-xl border border-slate-200 bg-white overflow-hidden shadow-sm">
             <div className="overflow-x-auto max-h-[60vh]">
               <table className="w-full text-left text-xs">
-                <thead><tr className="bg-red-800 text-white sticky top-0">{['지표코드', 'Lv3', '그룹', '실적', '표시명', '상세정의', '관리'].map(h => <th key={h} className="px-2 py-2 whitespace-nowrap">{h}</th>)}</tr></thead>
+                <thead>
+                  <tr className="bg-red-800 text-white sticky top-0">
+                    <SortableTh
+                      label="지표코드"
+                      field="code"
+                      value={listSort.codes}
+                      onChange={(mode) => setListSort((p) => ({ ...p, codes: mode }))}
+                      light
+                    />
+                    <th className="px-2 py-2 whitespace-nowrap">Lv3</th>
+                    <th className="px-2 py-2 whitespace-nowrap">그룹</th>
+                    <th className="px-2 py-2 whitespace-nowrap">실적</th>
+                    <SortableTh
+                      label="표시명"
+                      field="name"
+                      value={listSort.codes}
+                      onChange={(mode) => setListSort((p) => ({ ...p, codes: mode }))}
+                      light
+                    />
+                    <th className="px-2 py-2 whitespace-nowrap">상세정의</th>
+                    <th className="px-2 py-2 whitespace-nowrap">관리</th>
+                  </tr>
+                </thead>
                 <tbody className="divide-y divide-slate-100">
                   {sortedFilteredCodes.map(r => {
                     const orderIndex = codesOrderRows.findIndex((item) => item.indicator_code === r.indicator_code)
@@ -1616,33 +1678,41 @@ function OperandNameInput({ name, operands, onRename, onError }) {
   )
 }
 
-function CodebookSortBar({ value = 'order', onChange, light = false }) {
+function SortableTh({
+  label,
+  field,
+  value = 'order',
+  onChange,
+  light = false,
+  className = 'px-2 py-2 whitespace-nowrap',
+}) {
+  const activeAsc = value === `${field}_asc`
+  const activeDesc = value === `${field}_desc`
+  const active = activeAsc || activeDesc
+  const title = activeAsc
+    ? `${label} 오름차순 · 다시 클릭하면 내림차순`
+    : activeDesc
+      ? `${label} 내림차순 · 다시 클릭하면 기본순`
+      : `${label} 클릭: ABC/가나다순 정렬`
   return (
-    <div className={`flex flex-wrap items-center gap-1 ${light ? '' : ''}`}>
-      {!light && <span className="text-[11px] text-slate-500 mr-0.5">정렬</span>}
-      {CODEBOOK_SORT_MODES.map((mode) => {
-        const active = value === mode.id
-        return (
-          <button
-            key={mode.id}
-            type="button"
-            title={mode.title}
-            onClick={() => onChange?.(mode.id)}
-            className={`rounded px-1.5 py-0.5 text-[10px] font-medium transition-colors ${
-              active
-                ? light
-                  ? 'bg-white/20 text-white ring-1 ring-white/40'
-                  : 'bg-violet-100 text-violet-800 ring-1 ring-violet-200'
-                : light
-                  ? 'text-white/80 hover:bg-white/10'
-                  : 'text-slate-600 hover:bg-slate-100'
-            }`}
-          >
-            {mode.label}
-          </button>
-        )
-      })}
-    </div>
+    <th className={className}>
+      <button
+        type="button"
+        title={title}
+        onClick={() => onChange?.(nextCodebookSortMode(value, field))}
+        className={`inline-flex items-center gap-0.5 font-semibold ${
+          light
+            ? active ? 'text-white' : 'text-white/90 hover:text-white'
+            : active ? 'text-violet-800' : 'text-slate-600 hover:text-slate-900'
+        }`}
+      >
+        {label}
+        <span className={`inline-flex flex-col leading-none ${active ? 'opacity-100' : 'opacity-35'}`} aria-hidden>
+          <ArrowUp className={`h-2.5 w-2.5 ${activeAsc ? '' : 'opacity-40'}`} />
+          <ArrowDown className={`-mt-0.5 h-2.5 w-2.5 ${activeDesc ? '' : 'opacity-40'}`} />
+        </span>
+      </button>
+    </th>
   )
 }
 
