@@ -164,8 +164,6 @@ def upsert_plan_adjust_items(conn, plan_set_id: int, group: str, codes: list[str
             is_core="N",
             use_yn="Y",
             sort_order=int(max_sort) + 10,
-            collect_type="수기",
-            dept="준법감시부",
             data_source="내부통제 점검표",
             definition_text="내부통제 가감 항목. 실적 1점 = 종합달성률 ±0.01%p.",
             calc_logic_text="가감점 합 × 0.01%p 를 그룹 L1에 더함.",
@@ -177,14 +175,14 @@ def upsert_plan_adjust_items(conn, plan_set_id: int, group: str, codes: list[str
                   label=?, unit=?, weight=0, contribution_mode='ADJUST',
                   eval_category_lv1=?, eval_category_lv2=?, eval_category_lv3=?,
                   annual_target=0, baseline_actual=0, achievement_mode='flat',
-                  is_core='N', use_yn='Y', collect_type=?, dept=?, data_source=?,
+                  is_core='N', use_yn='Y', data_source=?,
                   definition_text=?, calc_logic_text=?
                 WHERE id=?
                 """,
                 (
                     fields["label"], fields["unit"],
                     fields["eval_category_lv1"], fields["eval_category_lv2"], fields["eval_category_lv3"],
-                    fields["collect_type"], fields["dept"], fields["data_source"],
+                    fields["data_source"],
                     fields["definition_text"], fields["calc_logic_text"],
                     existing["id"],
                 ),
@@ -196,15 +194,15 @@ def upsert_plan_adjust_items(conn, plan_set_id: int, group: str, codes: list[str
                   plan_set_id, group_code, indicator_code, mgmt_tool,
                   eval_category_lv1, eval_category_lv2, eval_category_lv3,
                   label, unit, weight, is_core, annual_target, baseline_actual,
-                  collect_type, dept, data_source, definition_text, calc_logic_text,
+                  data_source, definition_text, calc_logic_text,
                   achievement_mode, goal_direction, sort_order, use_yn, contribution_mode
-                ) VALUES (?,?,?,'KPI',?,?,?,?,?,?, 'N', 0, 0,?,?,?,?,?, 'flat', 'increase', ?, 'Y', 'ADJUST')
+                ) VALUES (?,?,?,'KPI',?,?,?,?,?,?, 'N', 0, 0,?,?,?, 'flat', 'increase', ?, 'Y', 'ADJUST')
                 """,
                 (
                     plan_set_id, group, code,
                     fields["eval_category_lv1"], fields["eval_category_lv2"], fields["eval_category_lv3"],
                     fields["label"], fields["unit"], 0,
-                    fields["collect_type"], fields["dept"], fields["data_source"],
+                    fields["data_source"],
                     fields["definition_text"], fields["calc_logic_text"],
                     fields["sort_order"],
                 ),

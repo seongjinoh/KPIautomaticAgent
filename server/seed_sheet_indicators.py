@@ -433,15 +433,15 @@ def _attach_to_latest_2026_plan(
               plan_set_id, group_code, indicator_code, mgmt_tool,
               eval_category_lv1, eval_category_lv2, eval_category_lv3,
               label, unit, weight, is_core, annual_target, monthly_target, baseline_actual,
-              collect_type, dept, data_source, definition_text, calc_logic_text,
+              data_source, definition_text, calc_logic_text,
               achievement_mode, goal_direction, sort_order, use_yn, contribution_mode
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 plan_id, ic["group_code"], code, "KPI",
                 lv1_name, lv2_name, ind_name,
                 ind_name, u, 3.0, "Y", annual, annual, annual * 0.85,
-                "자동취합", "데모", "데모시드(시트지표)",
+                "데모시드(시트지표)",
                 f"{ind_name} 데모 지표정의.",
                 "월간목표=연간목표(매월 동일). 달성률=100+(실적-목표)/목표×100.",
                 "flat", "increase", int(sort0) + 1 + i, "Y", "WEIGHT",

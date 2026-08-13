@@ -1,6 +1,8 @@
 /** 가공식 표시·피연산자 식별자 유틸 */
 
-const IDENT_RE = /^[^\d\W]\w*$/u
+// JavaScript의 \w는 한글을 포함하지 않는다. Unicode 문자/숫자를 명시해
+// 한글 IME로 입력한 피연산자 이름도 정상 식별자로 취급한다.
+const IDENT_RE = /^[\p{L}_][\p{L}\p{N}_]*$/u
 
 export function isValidOperandKey(key) {
   return IDENT_RE.test(String(key || '').trim())
@@ -15,7 +17,7 @@ export function replaceOperandIdent(expr, oldKey, newKey) {
   const from = String(oldKey || '')
   const to = String(newKey || '')
   if (!from || from === to) return String(expr || '')
-  const re = new RegExp(`(?<![\\w])${escapeRegExp(from)}(?![\\w])`, 'gu')
+  const re = new RegExp(`(?<![\\p{L}\\p{N}_])${escapeRegExp(from)}(?![\\p{L}\\p{N}_])`, 'gu')
   return String(expr || '').replace(re, to)
 }
 

@@ -68,6 +68,7 @@ def init_schema(conn: sqlite3.Connection | None = None) -> None:
         _migrate_eval_item_columns(conn)
         _migrate_indicator_common_unit(conn)
         _migrate_indicator_definitions(conn)
+        _migrate_indicator_sort_order(conn)
         _migrate_ownership_columns(conn)
         _migrate_fact_upload_tables(conn)
         _migrate_fact_period_tables(conn)
@@ -150,8 +151,6 @@ def _eval_plan_item_ddl() -> str:
           annual_target             REAL NOT NULL DEFAULT 0,
           monthly_target            REAL,
           baseline_actual           REAL NOT NULL DEFAULT 0,
-          collect_type              TEXT NOT NULL DEFAULT '',
-          dept                      TEXT NOT NULL DEFAULT '',
           data_source               TEXT NOT NULL DEFAULT '',
           definition_text           TEXT NOT NULL DEFAULT '',
           calc_logic_text           TEXT NOT NULL DEFAULT '',
@@ -196,6 +195,21 @@ def _migrate_eval_item_columns(conn: sqlite3.Connection) -> None:
     for name, decl in EVAL_ITEM_EXTRA_COLUMNS.items():
         if name not in cols:
             conn.execute(f"ALTER TABLE eval_plan_item ADD COLUMN {name} {decl}")
+
+
+def _migrate_indicator_sort_order(conn: sqlite3.Connection) -> None:
+    """코드북 전 탭에서 수동 표시순서를 저장할 수 있게 한다."""
+    for table, key in (("indicator_common", "common_code"), ("indicator_code", "indicator_code")):
+        if not _table_exists(conn, table):
+            continue
+        if "sort_order" not in _columns(conn, table):
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0")
+            rows = conn.execute(f"SELECT {key} FROM {table} ORDER BY {key}").fetchall()
+            for index, row in enumerate(rows):
+                conn.execute(
+                    f"UPDATE {table} SET sort_order=? WHERE {key}=?",
+                    (index, row[key]),
+                )
 
 
 def _migrate_indicator_common_unit(conn: sqlite3.Connection) -> None:
@@ -287,7 +301,7 @@ def _migrate_indicator_definitions(conn: sqlite3.Connection) -> None:
         return
 
     # 평가배치 → 지표마스터 상세정의(기존 definition_text가 있으면 상세로도 복사하지 않고 Lv3 백필용)
-    eval_fields_to_code = ("definition_text", "calc_logic_text", "data_source", "collect_type", "dept", "remark")
+    eval_fields_to_code = ("definition_text", "calc_logic_text", "data_source", "remark")
     for field in eval_fields_to_code:
         if field not in _columns(conn, "eval_plan_item"):
             continue
@@ -352,21 +366,22 @@ def _migrate_indicator_definitions(conn: sqlite3.Connection) -> None:
 
 
 def _migrate_eval_tables(conn: sqlite3.Connection) -> None:
-    """Rebuild eval tables when legacy month-row schema or result_code remains."""
+    """구 평가 스키마 및 제거된 수집방식/Ownership부서 컬럼을 정리한다."""
     if not _table_exists(conn, "eval_plan_item"):
         return
 
     item_cols = _columns(conn, "eval_plan_item")
     set_exists = _table_exists(conn, "eval_plan_set")
     modern = set_exists and "plan_set_id" in item_cols and "year" not in item_cols
-    if modern and "result_code" not in item_cols:
+    removed_cols = {"result_code", "collect_type", "dept"}
+    if modern and not (removed_cols & item_cols):
         return
 
     preserved_sets = []
     preserved_items = []
-    if modern and "result_code" in item_cols:
+    if modern:
         preserved_sets = [dict(r) for r in conn.execute("SELECT * FROM eval_plan_set").fetchall()]
-        cols = [c for c in item_cols if c != "result_code"]
+        cols = [c for c in item_cols if c not in removed_cols]
         col_sql = ", ".join(cols)
         preserved_items = [dict(r) for r in conn.execute(f"SELECT {col_sql} FROM eval_plan_item").fetchall()]
 
@@ -391,7 +406,7 @@ def _migrate_eval_tables(conn: sqlite3.Connection) -> None:
                 ),
             )
         for row in preserved_items:
-            keys = [k for k in row.keys() if k != "result_code"]
+            keys = [k for k in row.keys() if k not in removed_cols]
             placeholders = ", ".join("?" for _ in keys)
             conn.execute(
                 f"INSERT INTO eval_plan_item({', '.join(keys)}) VALUES ({placeholders})",
@@ -483,7 +498,7 @@ def _migrate_ownership_columns(conn: sqlite3.Connection) -> None:
 
     # 주관부서 → 단일 피평가그룹이면 Ownership 그룹 후보로 백필
     dept_map: dict[str, str] = {}
-    if _table_exists(conn, "eval_plan_item"):
+    if _table_exists(conn, "eval_plan_item") and "dept" in _columns(conn, "eval_plan_item"):
         rows = conn.execute(
             """
             SELECT TRIM(dept) AS d, group_code, COUNT(*) AS n

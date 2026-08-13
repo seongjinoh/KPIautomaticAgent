@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""부서 주관 실적 입력: 평가배치(dept) 기준 목록 · 저장 · 엑셀."""
+"""부서 주관 실적 입력: 지표마스터 Ownership 기준 목록 · 저장 · 엑셀."""
 from __future__ import annotations
 
 import json
@@ -24,9 +24,12 @@ def list_distinct_depts(conn, year: int, month: int) -> list[str]:
         return []
     rows = conn.execute(
         """
-        SELECT DISTINCT TRIM(dept) AS dept
-        FROM eval_plan_item
-        WHERE plan_set_id=? AND COALESCE(use_yn,'Y')='Y' AND TRIM(COALESCE(dept,'')) <> ''
+        SELECT DISTINCT TRIM(COALESCE(NULLIF(ic.dept, ''), cm.dept, '')) AS dept
+        FROM eval_plan_item e
+        JOIN indicator_code ic ON ic.indicator_code=e.indicator_code
+        JOIN indicator_common cm ON cm.common_code=ic.common_code
+        WHERE e.plan_set_id=? AND COALESCE(e.use_yn,'Y')='Y'
+          AND TRIM(COALESCE(NULLIF(ic.dept, ''), cm.dept, '')) <> ''
         ORDER BY dept
         """,
         (plan["id"],),
@@ -66,11 +69,9 @@ def list_all_fact_entries(
         SELECT
           e.indicator_code,
           MAX(e.label) AS label,
-          MAX(e.dept) AS plan_dept,
           MAX(COALESCE(NULLIF(TRIM(ic.owner_group_code), ''), NULLIF(TRIM(cm.owner_group_code), ''))) AS ownership_group_code,
-          MAX(COALESCE(NULLIF(TRIM(ic.dept), ''), NULLIF(TRIM(cm.dept), ''), e.dept, '')) AS ownership_dept,
+          MAX(COALESCE(NULLIF(TRIM(ic.dept), ''), NULLIF(TRIM(cm.dept), ''), '')) AS ownership_dept,
           MAX(COALESCE(NULLIF(TRIM(e.unit), ''), NULLIF(TRIM(cm.unit), ''), ic.unit, '')) AS unit,
-          MAX(e.collect_type) AS collect_type,
           MAX(e.mgmt_tool) AS mgmt_tool,
           GROUP_CONCAT(DISTINCT e.group_code) AS group_codes,
           GROUP_CONCAT(DISTINCT og.name) AS group_names,
@@ -98,7 +99,7 @@ def list_all_fact_entries(
     for r in rows:
         gcodes = [x for x in str(r["group_codes"] or "").split(",") if x]
         group_locked = any(g in confirmed for g in gcodes)
-        own_dept = r["ownership_dept"] or r["plan_dept"] or ""
+        own_dept = r["ownership_dept"] or ""
         own_group = (r["ownership_group_code"] or "").strip().upper()
         items.append({
             "indicator_code": r["indicator_code"],
@@ -107,7 +108,6 @@ def list_all_fact_entries(
             "dept": own_dept,
             "ownership_dept": own_dept,
             "ownership_group_code": own_group,
-            "collect_type": r["collect_type"] or "",
             "mgmt_tool": r["mgmt_tool"] or "",
             "group_codes": gcodes,
             "group_names": [x for x in str(r["group_names"] or "").split(",") if x],
@@ -168,11 +168,9 @@ def list_dept_fact_entries(
         SELECT
           e.indicator_code,
           MAX(e.label) AS label,
-          MAX(e.dept) AS plan_dept,
           MAX(COALESCE(NULLIF(TRIM(ic.owner_group_code), ''), NULLIF(TRIM(cm.owner_group_code), ''))) AS ownership_group_code,
-          MAX(COALESCE(NULLIF(TRIM(ic.dept), ''), NULLIF(TRIM(cm.dept), ''), e.dept, '')) AS ownership_dept,
+          MAX(COALESCE(NULLIF(TRIM(ic.dept), ''), NULLIF(TRIM(cm.dept), ''), '')) AS ownership_dept,
           MAX(COALESCE(NULLIF(TRIM(e.unit), ''), NULLIF(TRIM(cm.unit), ''), ic.unit, '')) AS unit,
-          MAX(e.collect_type) AS collect_type,
           MAX(e.mgmt_tool) AS mgmt_tool,
           GROUP_CONCAT(DISTINCT e.group_code) AS group_codes,
           GROUP_CONCAT(DISTINCT og.name) AS group_names,
@@ -188,7 +186,7 @@ def list_dept_fact_entries(
           ON fc.indicator_code = e.indicator_code AND fc.eval_ym = ?
         WHERE e.plan_set_id = ?
           AND COALESCE(e.use_yn, 'Y') = 'Y'
-          AND TRIM(COALESCE(e.dept, '')) = ?
+          AND TRIM(COALESCE(NULLIF(ic.dept, ''), cm.dept, '')) = ?
         GROUP BY e.indicator_code
         ORDER BY MAX(e.sort_order), e.indicator_code
         """,
@@ -199,7 +197,7 @@ def list_dept_fact_entries(
     for r in rows:
         gcodes = [x for x in str(r["group_codes"] or "").split(",") if x]
         group_locked = any(g in confirmed for g in gcodes)
-        own_dept = r["ownership_dept"] or r["plan_dept"] or dept
+        own_dept = r["ownership_dept"] or dept
         own_group = (r["ownership_group_code"] or "").strip().upper()
         items.append({
             "indicator_code": r["indicator_code"],
@@ -208,7 +206,6 @@ def list_dept_fact_entries(
             "dept": own_dept,
             "ownership_dept": own_dept,
             "ownership_group_code": own_group,
-            "collect_type": r["collect_type"] or "",
             "mgmt_tool": r["mgmt_tool"] or "",
             "group_codes": gcodes,
             "group_names": [x for x in str(r["group_names"] or "").split(",") if x],
@@ -264,11 +261,9 @@ def list_group_fact_entries(
         SELECT
           e.indicator_code,
           MAX(e.label) AS label,
-          MAX(e.dept) AS plan_dept,
           MAX(COALESCE(NULLIF(TRIM(ic.owner_group_code), ''), NULLIF(TRIM(cm.owner_group_code), ''))) AS ownership_group_code,
-          MAX(COALESCE(NULLIF(TRIM(ic.dept), ''), NULLIF(TRIM(cm.dept), ''), e.dept, '')) AS ownership_dept,
+          MAX(COALESCE(NULLIF(TRIM(ic.dept), ''), NULLIF(TRIM(cm.dept), ''), '')) AS ownership_dept,
           MAX(COALESCE(NULLIF(TRIM(e.unit), ''), NULLIF(TRIM(cm.unit), ''), ic.unit, '')) AS unit,
-          MAX(e.collect_type) AS collect_type,
           MAX(e.mgmt_tool) AS mgmt_tool,
           MAX(e.group_code) AS group_code,
           MAX(og.name) AS group_name,
@@ -292,7 +287,7 @@ def list_group_fact_entries(
     ).fetchall()
     items = []
     for r in rows:
-        own_dept = r["ownership_dept"] or r["plan_dept"] or ""
+        own_dept = r["ownership_dept"] or ""
         own_group = (r["ownership_group_code"] or "").strip().upper()
         items.append({
             "indicator_code": r["indicator_code"],
@@ -301,7 +296,6 @@ def list_group_fact_entries(
             "dept": own_dept,
             "ownership_dept": own_dept,
             "ownership_group_code": own_group,
-            "collect_type": r["collect_type"] or "",
             "mgmt_tool": r["mgmt_tool"] or "",
             "group_codes": [group_code],
             "group_names": [r["group_name"] or group_code],

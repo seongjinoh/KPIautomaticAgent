@@ -21,6 +21,41 @@ def round_value(value: float | None, digits: int = 2) -> float | None:
     return round(value * unit) / unit
 
 
+def _parse_percent_like(value: Any, fallback: float) -> float:
+    if value is None or value == "":
+        return fallback
+    try:
+        parsed = float(str(value).replace("%", "").replace(",", "").strip())
+        return parsed if math.isfinite(parsed) else fallback
+    except (TypeError, ValueError):
+        return fallback
+
+
+def apply_achievement_policy(def_row: dict, raw_achievement: float | None) -> float | None:
+    """상·하한, 승수, 조정구간을 프론트와 동일하게 적용한다."""
+    if raw_achievement is None:
+        return None
+    try:
+        raw = float(raw_achievement)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(raw):
+        return None
+
+    lower = _parse_percent_like(def_row.get("cap_min"), 40.0)
+    upper = _parse_percent_like(def_row.get("cap_max"), 150.0)
+    multiplier = _parse_percent_like(def_row.get("score_rule"), 1.0)
+    band = _parse_percent_like(def_row.get("adj_band"), 120.0)
+    adjust = _parse_percent_like(def_row.get("penalty_rule"), 0.1)
+
+    converted = 100.0 + ((raw - 100.0) * multiplier)
+    converted = max(converted, lower)
+    if converted >= band:
+        converted = band + ((converted - band) * adjust)
+    converted = min(max(converted, lower), upper)
+    return round_value(converted, 2)
+
+
 def is_leap_year(year: int) -> bool:
     return calendar.isleap(int(year))
 

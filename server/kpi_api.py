@@ -235,7 +235,8 @@ def code_lookup_query() -> str:
           ic.detailed_definition_text AS master_detailed_definition_text,
           ic.owner_group_code AS master_owner_group_code,
           ic.dept AS master_dept,
-          ic.use_yn
+          ic.use_yn,
+          ic.sort_order
         FROM indicator_code ic
         JOIN indicator_common cm ON cm.common_code = ic.common_code
         JOIN code_lv1 l1 ON l1.code = cm.lv1_code
@@ -266,8 +267,6 @@ def plan_item_query() -> str:
           e.annual_target,
           e.monthly_target,
           e.baseline_actual,
-          e.collect_type,
-          e.dept,
           e.data_source,
           e.definition_text,
           e.calc_logic_text,
@@ -693,10 +692,11 @@ class Handler(BaseHTTPRequestHandler):
                 conn.execute(
                     """INSERT INTO indicator_code
                        (indicator_code, common_code, group_code, perf_code, display_name, unit, agg_type, use_yn,
-                        detailed_definition_text, owner_group_code, dept)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                        sort_order, detailed_definition_text, owner_group_code, dept)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (
                         code, common, group, perf, display, unit, "", body.get("use_yn") or "Y",
+                        int(body.get("sort_order") or 0),
                         defs["detailed_definition_text"], own_group, own_dept,
                     ),
                 )
@@ -778,19 +778,36 @@ class Handler(BaseHTTPRequestHandler):
                     if contribution_mode == CONTRIB_ADJUST:
                         weight = 0.0
                     monthly_target, custom_monthly_json = resolve_monthly_targets_for_save(item, year, effective_month)
+                    score_rule = str(
+                        item.get("score_rule") or item.get("scoreRule")
+                        or item.get("기본승수") or item.get("배점기준") or "1"
+                    ).strip()
+                    penalty_rule = str(
+                        item.get("penalty_rule") or item.get("penaltyRule")
+                        or item.get("조정승수") or item.get("감점기준") or "0.1"
+                    ).strip()
+                    adj_band = str(
+                        item.get("adj_band") or item.get("adjBand") or item.get("조정구간") or "120"
+                    ).strip()
+                    cap_max = _opt_float(item, "cap_max", "capMax", "상한")
+                    cap_min = _opt_float(item, "cap_min", "capMin", "하한")
+                    if cap_max is None:
+                        cap_max = 150.0
+                    if cap_min is None:
+                        cap_min = 40.0
                     conn.execute(
                         """
                         INSERT INTO eval_plan_item(
                           plan_set_id, group_code, indicator_code, mgmt_tool,
                           eval_category_lv1, eval_category_lv2, eval_category_lv3,
                           label, unit, weight, is_core, annual_target, monthly_target, baseline_actual,
-                          collect_type, dept, data_source, definition_text, calc_logic_text,
+                          data_source, definition_text, calc_logic_text,
                           h1_target, h2_target, score_rule, penalty_rule, cap_max, cap_min, remark, adj_band,
                           filters_json, formula_id, achievement_mode, goal_direction,
                           custom_achievement_expr, custom_monthly_targets_json,
                           sort_order, use_yn, contribution_mode,
                           target_start_month, target_end_month
-                        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                         """,
                         (
                             plan_set_id,
@@ -808,14 +825,6 @@ class Handler(BaseHTTPRequestHandler):
                             monthly_target,
                             float(item.get("baseline_actual") or item.get("baselineActual") or item.get("기준실적") or 0),
                             coalesce_eval_text(
-                                item.get("collect_type") or item.get("collectType"),
-                                "",
-                            ),
-                            coalesce_eval_text(
-                                item.get("dept") or item.get("부서명"),
-                                merged_def.get("dept") or "",
-                            ),
-                            coalesce_eval_text(
                                 item.get("data_source") or item.get("dataSource") or item.get("데이터원천"),
                                 (
                                     f"{merged_def.get('data_source_kind') or ''}"
@@ -832,15 +841,15 @@ class Handler(BaseHTTPRequestHandler):
                             ),
                             _opt_float(item, "h1_target", "h1Target", "상반기목표"),
                             _opt_float(item, "h2_target", "h2Target", "하반기목표"),
-                            str(item.get("score_rule") or item.get("scoreRule") or item.get("기본승수") or item.get("배점기준") or "").strip(),
-                            str(item.get("penalty_rule") or item.get("penaltyRule") or item.get("조정승수") or item.get("감점기준") or "").strip(),
-                            _opt_float(item, "cap_max", "capMax", "상한"),
-                            _opt_float(item, "cap_min", "capMin", "하한"),
+                            score_rule,
+                            penalty_rule,
+                            cap_max,
+                            cap_min,
                             coalesce_eval_text(
                                 item.get("remark") or item.get("비고"),
                                 "",
                             ),
-                            str(item.get("adj_band") or item.get("adjBand") or item.get("조정구간") or "").strip(),
+                            adj_band,
                             serialize_filters(item),
                             _opt_int(item, "formula_id", "formulaId"),
                             str(item.get("achievement_mode") or item.get("achievementMode") or item.get("산식구분") or "linear").strip().lower(),
@@ -1024,10 +1033,10 @@ class Handler(BaseHTTPRequestHandler):
                 with get_connection() as conn:
                     cur = conn.execute(
                         """SELECT common_code, lv1_code, lv2_code, lv3_code, name,
-                                  unit, use_yn,
+                                  unit, use_yn, sort_order,
                                   definition_text, calc_logic_text, owner_group_code, dept,
                                   calc_cycle, calc_timing, data_source_kind, data_source
-                           FROM indicator_common ORDER BY common_code"""
+                           FROM indicator_common ORDER BY sort_order, common_code"""
                     )
                     self.send_json({"items": rows_to_list(cur)})
                 return
@@ -1042,7 +1051,7 @@ class Handler(BaseHTTPRequestHandler):
                 if common:
                     sql += " AND ic.common_code=?"
                     params.append(common)
-                sql += " ORDER BY ic.indicator_code"
+                sql += " ORDER BY ic.sort_order, ic.indicator_code"
                 with get_connection() as conn:
                     self.send_json({"items": enrich_code_rows(rows_to_list(conn.execute(sql, params)))})
                 return
@@ -1710,11 +1719,12 @@ class Handler(BaseHTTPRequestHandler):
                         conn.execute(
                             """INSERT INTO indicator_common
                                (common_code, lv1_code, lv2_code, lv3_code, name, unit, allowed_perf, common_yn, use_yn,
-                                definition_text, calc_logic_text, owner_group_code, dept, calc_cycle, calc_timing,
+                                sort_order, definition_text, calc_logic_text, owner_group_code, dept, calc_cycle, calc_timing,
                                 data_source_kind, data_source)
-                               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                             (
                                 common, lv1, lv2, lv3, name, unit, "", "단독", body.get("use_yn") or "Y",
+                                int(body.get("sort_order") or 0),
                                 defs["definition_text"], defs["calc_logic_text"],
                                 defs["owner_group_code"], defs["dept"],
                                 defs["calc_cycle"], defs["calc_timing"],
@@ -1868,7 +1878,7 @@ class Handler(BaseHTTPRequestHandler):
                     defs = pick_lv3_definition_fields(body)
                     cur = conn.execute(
                         """UPDATE indicator_common
-                           SET name=?, unit=?, use_yn=?,
+                           SET name=?, unit=?, use_yn=?, sort_order=COALESCE(?, sort_order),
                                definition_text=?, calc_logic_text=?, owner_group_code=?, dept=?,
                                calc_cycle=?, calc_timing=?,
                                data_source_kind=?, data_source=?
@@ -1877,6 +1887,7 @@ class Handler(BaseHTTPRequestHandler):
                             str(body.get("name") or "").strip(),
                             unit,
                             body.get("use_yn") or "Y",
+                            int(body["sort_order"]) if body.get("sort_order") is not None else None,
                             defs["definition_text"], defs["calc_logic_text"],
                             defs["owner_group_code"], defs["dept"],
                             defs["calc_cycle"], defs["calc_timing"],
@@ -1905,12 +1916,13 @@ class Handler(BaseHTTPRequestHandler):
                 with get_connection() as conn:
                     cur = conn.execute(
                         """UPDATE indicator_code
-                           SET display_name=?, use_yn=?, detailed_definition_text=?,
+                           SET display_name=?, use_yn=?, sort_order=COALESCE(?, sort_order), detailed_definition_text=?,
                                owner_group_code=?, dept=?
                            WHERE indicator_code=?""",
                         (
                             str(body.get("display_name") or "").strip(),
                             body.get("use_yn") or "Y",
+                            int(body["sort_order"]) if body.get("sort_order") is not None else None,
                             defs["detailed_definition_text"],
                             defs.get("owner_group_code", ""),
                             defs.get("dept", ""),
@@ -1981,9 +1993,59 @@ class Handler(BaseHTTPRequestHandler):
                 elif path.startswith("/api/owner-groups/") and len(parts) == 3:
                     cur = conn.execute("DELETE FROM owner_group WHERE code=?", (parts[2].upper(),))
                 elif path.startswith("/api/indicators/common/") and len(parts) == 4:
-                    cur = conn.execute("DELETE FROM indicator_common WHERE common_code=?", (parts[3].upper(),))
+                    code = parts[3].upper()
+                    n = conn.execute(
+                        "SELECT COUNT(*) FROM indicator_code WHERE common_code=?",
+                        (code,),
+                    ).fetchone()[0]
+                    if n:
+                        self.send_json({
+                            "error": "in_use",
+                            "message": f"연결된 지표마스터가 {n}건 있어 삭제할 수 없습니다. 지표마스터를 먼저 삭제하세요.",
+                            "count": int(n),
+                        }, 409)
+                        return
+                    cur = conn.execute("DELETE FROM indicator_common WHERE common_code=?", (code,))
                 elif path.startswith("/api/indicators/codes/") and len(parts) == 4:
-                    cur = conn.execute("DELETE FROM indicator_code WHERE indicator_code=?", (parts[3].upper(),))
+                    code = parts[3].upper()
+                    refs = []
+                    # 실제 FK뿐 아니라 업로드·이력 테이블의 논리 참조도 모두 검사한다.
+                    for table_row in conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+                    ).fetchall():
+                        table = table_row[0]
+                        if table == "indicator_code":
+                            continue
+                        columns = {
+                            row[1] for row in conn.execute(f'PRAGMA table_info("{table}")').fetchall()
+                        }
+                        if "indicator_code" in columns:
+                            n = conn.execute(
+                                f'SELECT COUNT(*) FROM "{table}" WHERE indicator_code=?',
+                                (code,),
+                            ).fetchone()[0]
+                            if n:
+                                refs.append((table, int(n)))
+                    if "fact_formula" not in {name for name, _ in refs}:
+                        n = conn.execute(
+                            """SELECT COUNT(*) FROM fact_formula
+                               WHERE output_indicator_code=?
+                                  OR operands_json LIKE ?""",
+                            (code, f'%"{code}"%'),
+                        ).fetchone()[0]
+                        if n:
+                            refs.append(("fact_formula", int(n)))
+                    if refs:
+                        total = sum(n for _, n in refs)
+                        detail = ", ".join(f"{name} {n}건" for name, n in refs[:5])
+                        self.send_json({
+                            "error": "in_use",
+                            "message": f"평가·실적·가공식 등에서 {total}건 참조 중이라 삭제할 수 없습니다. ({detail})",
+                            "count": total,
+                            "references": [{"table": name, "count": n} for name, n in refs],
+                        }, 409)
+                        return
+                    cur = conn.execute("DELETE FROM indicator_code WHERE indicator_code=?", (code,))
                 else:
                     self.send_json({"error": "not_found", "path": path}, 404)
                     return

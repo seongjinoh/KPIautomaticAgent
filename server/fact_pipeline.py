@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from achievement_engine import (
+    apply_achievement_policy,
     calculate_achievement_rate,
     compute_monthly_target,
     evaluate_formula_expr,
@@ -271,9 +272,11 @@ def refresh_facts(conn, year: int, month: int, *, skip_collect: bool = False) ->
             filter_vals = _resolve_filter_values(conn, ym, group, filters) if mode == "custom" else {}
 
             simple = calculate_achievement_rate(item, actual, month, year, None)
-            converted = simple
+            raw_converted = simple
             if mode == "custom":
-                converted = calculate_achievement_rate(item, actual, month, year, filter_vals)
+                raw_converted = calculate_achievement_rate(item, actual, month, year, filter_vals)
+            converted = apply_achievement_policy(item, raw_converted)
+            if mode == "custom":
                 conn.execute(
                     """
                     INSERT INTO custom_achievement(eval_ym, group_code, indicator_code, actual, monthly_target, achievement, batch_id)

@@ -297,8 +297,6 @@ def parse_eval_workbook(xlsx_path: Path) -> list[dict]:
             "is_core": _core_yn_from_value(_first(row, "Core", "is_core", "isCore", "core")),
             "annual_target": float(_first(row, "연간목표", "annual_target", "annualTarget") or 0),
             "unit": str(_first(row, "단위", "unit") or "").strip(),
-            "collect_type": "",
-            "dept": "",
             "data_source": "",
             "h1_target": None,
             "h2_target": None,

@@ -21,9 +21,13 @@ const EVAL_FIELD_LABELS = {
   weight: '비중(%)', evalCategoryLv1: '평가 Lv1',
   evalCategoryLv2: '평가 Lv2', evalCategoryLv3: '평가 Lv3', groupCode: '피평가그룹',
   label: '평가 표시명', unit: '단위', annualTarget: '연간목표',
-  capMax: '지표 상한', capMin: '지표 하한', scoreRule: '승수', adjBand: '조정구간', penaltyRule: '조정승수',
-  collectType: '수집방식', dept: 'Ownership 부서',
+  capMax: '지표 상한(%)', capMin: '지표 하한(%)', scoreRule: '승수', adjBand: '조정구간(%)', penaltyRule: '조정승수',
 }
+
+const EVAL_NUMERIC_FIELDS = new Set([
+  'weight', 'annualTarget', 'monthlyTarget', 'baselineActual',
+  'capMax', 'capMin', 'scoreRule', 'adjBand', 'penaltyRule',
+])
 
 const emptyEvalDraft = {
   indicatorCode: '', mgmtTool: 'KPI', weight: 0, isCore: false,
@@ -31,9 +35,9 @@ const emptyEvalDraft = {
   evalCategoryLv1: '', evalCategoryLv2: '', evalCategoryLv3: '', groupCode: '', groupName: '',
   label: '', unit: '', annualTarget: 0, monthlyTarget: null, baselineActual: 0,
   targetStartMonth: 1, targetEndMonth: 12,
-  collectType: '', dept: '', dataSource: '',
+  dataSource: '',
   definitionText: '', calcLogicText: '',
-  h1Target: null, h2Target: null, scoreRule: '', adjBand: '', penaltyRule: '', capMax: null, capMin: null, remark: '',
+  h1Target: null, h2Target: null, scoreRule: 1, adjBand: 120, penaltyRule: 0.1, capMax: 150, capMin: 40, remark: '',
   filters: {},
   achievementMode: ACHIEVEMENT_MODES.LINEAR,
   goalDirection: GOAL_DIRECTIONS.INCREASE,
@@ -41,6 +45,49 @@ const emptyEvalDraft = {
   customMonthlyTargets: null,
   customTargetMode: 'auto',
   sortOrder: 0,
+}
+
+function formatDisplayNumber(value) {
+  if (value == null || value === '' || !Number.isFinite(Number(value))) return '—'
+  return new Intl.NumberFormat('ko-KR', { maximumFractionDigits: 10 }).format(Number(value))
+}
+
+function NumericInput({ value, onChange, className = '', disabled = false }) {
+  const format = (v) => (v == null || v === '' || !Number.isFinite(Number(v))
+    ? ''
+    : new Intl.NumberFormat('ko-KR', { maximumFractionDigits: 10 }).format(Number(v)))
+  const [text, setText] = useState(() => format(value))
+  const focused = useRef(false)
+
+  useEffect(() => {
+    if (!focused.current) setText(format(value))
+  }, [value])
+
+  return (
+    <input
+      type="text"
+      inputMode="decimal"
+      disabled={disabled}
+      value={text}
+      onFocus={() => { focused.current = true }}
+      onBlur={() => {
+        focused.current = false
+        setText(format(value))
+      }}
+      onChange={(e) => {
+        const raw = e.target.value
+        const normalized = raw.replace(/,/g, '').replace(/[^\d.-]/g, '')
+        setText(raw)
+        if (normalized === '' || normalized === '-' || normalized === '.' || normalized === '-.') {
+          onChange('')
+          return
+        }
+        const number = Number(normalized)
+        if (Number.isFinite(number)) onChange(number)
+      }}
+      className={className}
+    />
+  )
 }
 
 const rowGroupCode = (r) => String(r.groupCode || r.group_code || '').trim()
@@ -770,7 +817,7 @@ export default function EvalConfigView({
     return list.filter(r => {
       return [
         r.code, r.indicatorCode, r.evalCategoryLv1, r.evalCategoryLv2, r.evalCategoryLv3,
-        r.groupCode, r.groupName, r.label, r.dept, r.displayName,
+        r.groupCode, r.groupName, r.label, r.displayName,
       ]
         .filter(Boolean).join(' ').toLowerCase().includes(s)
     })
@@ -799,7 +846,7 @@ export default function EvalConfigView({
   }, [deferredEvalDraft, previewActual, previewMonth, selectedYear, selectedMonth])
 
   const filteredCatalog = useMemo(() => {
-    const base = (codeCatalog || []).filter((m) => (m.use_yn || 'Y') !== 'N')
+    const base = codeCatalog || []
     const evalGroup = (evalDraft.groupCode || '').trim().toUpperCase()
     const s = indicatorSearch.trim().toLowerCase()
     let list = base
@@ -1048,8 +1095,6 @@ export default function EvalConfigView({
       dataSource: prev.dataSource || dataSource || '',
       definitionText: prev.definitionText || merged.definition_text_combined || merged.definition_text || '',
       calcLogicText: prev.calcLogicText || merged.calc_logic_text || '',
-      collectType: prev.collectType || '',
-      dept: prev.dept || merged.dept || '',
       remark: prev.remark || '',
     }))
     setIndicatorSearch('')
@@ -1477,35 +1522,19 @@ export default function EvalConfigView({
                   return (
                     <label key={key} className="text-xs text-slate-600 space-y-1">
                       <span>{label}</span>
-                      <input
-                        value={evalDraft[key] ?? ''}
-                        onChange={e => setEvalDraft(prev => ({
-                          ...prev,
-                          [key]: (
-                            key === 'weight' ||
-                            key === 'annualTarget' ||
-                            key === 'monthlyTarget' ||
-                            key === 'baselineActual' ||
-                            key === 'capMax' ||
-                            key === 'capMin' ||
-                            key === 'scoreRule' ||
-                            key === 'penaltyRule'
-                          )
-                            ? (e.target.value === '' ? '' : Number(e.target.value))
-                            : e.target.value,
-                        }))}
-                        className="w-full px-2.5 py-2 rounded-lg border border-slate-200 text-sm"
-                        type={(
-                          key === 'weight' ||
-                          key === 'annualTarget' ||
-                          key === 'monthlyTarget' ||
-                          key === 'baselineActual' ||
-                          key === 'capMax' ||
-                          key === 'capMin' ||
-                          key === 'scoreRule' ||
-                          key === 'penaltyRule'
-                        ) ? 'number' : 'text'}
-                      />
+                      {EVAL_NUMERIC_FIELDS.has(key) ? (
+                        <NumericInput
+                          value={evalDraft[key]}
+                          onChange={(value) => setEvalDraft(prev => ({ ...prev, [key]: value }))}
+                          className="w-full px-2.5 py-2 rounded-lg border border-slate-200 text-sm"
+                        />
+                      ) : (
+                        <input
+                          value={evalDraft[key] ?? ''}
+                          onChange={e => setEvalDraft(prev => ({ ...prev, [key]: e.target.value }))}
+                          className="w-full px-2.5 py-2 rounded-lg border border-slate-200 text-sm"
+                        />
+                      )}
                     </label>
                   )
                 })}
@@ -1544,7 +1573,7 @@ export default function EvalConfigView({
                   {evalDraft.achievementMode === ACHIEVEMENT_MODES.LINEAR && (
                     <label className="text-xs text-slate-600 space-y-1">
                       <span>기준실적 (평가시작 기준)</span>
-                      <input type="number" value={evalDraft.baselineActual ?? 0} onChange={e => setEvalDraft(prev => ({ ...prev, baselineActual: Number(e.target.value) || 0 }))} className="w-full px-2.5 py-2 rounded-lg border border-slate-200 text-sm" />
+                      <NumericInput value={evalDraft.baselineActual ?? 0} onChange={(value) => setEvalDraft(prev => ({ ...prev, baselineActual: value === '' ? 0 : value }))} className="w-full px-2.5 py-2 rounded-lg border border-slate-200 text-sm" />
                     </label>
                   )}
                 </div>
@@ -1625,13 +1654,12 @@ export default function EvalConfigView({
                         return (
                           <label key={month} className={`text-[10px] space-y-1 ${inPeriod ? 'text-slate-500' : 'text-slate-300'}`}>
                             <span>{month}월{inPeriod ? '' : ' ·'}</span>
-                            <input
-                              type="number"
+                            <NumericInput
                               disabled={!inPeriod}
                               value={inPeriod
                                 ? (evalDraft.customMonthlyTargets?.[month] ?? evalPreview.targets.find(t => t.month === month)?.target ?? '')
                                 : ''}
-                              onChange={e => updateCustomMonthTarget(month, e.target.value)}
+                              onChange={(value) => updateCustomMonthTarget(month, value)}
                               className={`w-full px-2 py-1.5 rounded border text-xs ${inPeriod ? 'border-slate-200' : 'border-slate-100 bg-slate-50'}`}
                             />
                           </label>
@@ -1671,11 +1699,11 @@ export default function EvalConfigView({
                     </label>
                     <label className="text-[10px] text-slate-500 space-y-1">
                       <span>가정 실적</span>
-                      <input type="number" value={previewActual} onChange={e => setPreviewActual(Number(e.target.value) || 0)} className="px-2 py-1.5 rounded border border-slate-200 text-xs w-28" />
+                      <NumericInput value={previewActual} onChange={(value) => setPreviewActual(value === '' ? 0 : value)} className="px-2 py-1.5 rounded border border-slate-200 text-xs w-28" />
                     </label>
                     <div className="ml-auto text-right">
                       <p className="text-[10px] text-slate-500">{previewMonth}월 목표</p>
-                      <p className="text-sm font-black text-slate-800 tabular-nums">{evalPreview.monthTarget ?? '—'}</p>
+                      <p className="text-sm font-black text-slate-800 tabular-nums">{formatDisplayNumber(evalPreview.monthTarget)}</p>
                       <p className="text-[10px] text-emerald-700 font-bold mt-1">달성률 {evalPreview.achievement ?? '—'}%</p>
                     </div>
                   </div>
@@ -1689,7 +1717,7 @@ export default function EvalConfigView({
                           : 'bg-slate-50'
                       }`}>
                         <p className="text-[9px] text-slate-400">{month}월</p>
-                        <p className="text-[10px] font-bold tabular-nums text-slate-700">{inPeriod ? (target ?? '—') : '—'}</p>
+                        <p className="text-[10px] font-bold tabular-nums text-slate-700">{inPeriod ? formatDisplayNumber(target) : '—'}</p>
                       </div>
                       )
                     })}

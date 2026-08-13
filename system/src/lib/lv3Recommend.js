@@ -35,7 +35,6 @@ export function findSimilarNamedRows(rows, name, {
   for (const row of rows || []) {
     const code = row?.[codeKey]
     if (excludeCode != null && String(code) === String(excludeCode)) continue
-    if ((row.use_yn || 'Y') === 'N') continue
     const n = normalizeIndicatorName(row.name)
     if (!n) continue
     let score = dice(q, n)

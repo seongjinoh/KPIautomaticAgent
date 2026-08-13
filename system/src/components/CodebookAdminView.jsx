@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Search, Layers, ClipboardList, Plus, Pencil, Trash2, Upload, Download, X, Users, Link2, Calculator, Sparkles } from 'lucide-react'
+import { Search, Layers, ClipboardList, Plus, Pencil, Trash2, Upload, Download, X, Users, Link2, Calculator, Sparkles, ArrowUp, ArrowDown } from 'lucide-react'
 import { api } from '../lib/apiClient'
 import { findSimilarCommons, findSimilarNamedRows, recommendLv3Classification } from '../lib/lv3Recommend'
 import { composeIndicatorCode, PERF_OPTIONS } from '../lib/codeSystem'
@@ -148,31 +148,20 @@ export default function CodebookAdminView() {
     } catch (e) { fail(e) }
   }
 
-  const deactivateCode = async (r) => {
-    if (!window.confirm(`[${r.indicator_code}] 미사용 처리할까요?`)) return
+  const removeCode = async (r) => {
+    if (!window.confirm(`[${r.indicator_code}] ${r.display_name || ''}\n\n연결된 평가·실적 데이터가 없으면 삭제합니다. 계속할까요?`)) return
     try {
-      await api.updateCode(r.indicator_code, {
-        display_name: r.display_name,
-        use_yn: 'N',
-        detailed_definition_text: r.detailed_definition_text || '',
-        owner_group_code: r.master_definition?.owner_group_code || r.owner_group_code || '',
-        dept: r.master_definition?.dept || r.dept || '',
-      })
-      note('미사용 처리됨')
+      await api.deleteCode(r.indicator_code)
+      note(`${r.indicator_code}를 삭제했습니다.`)
       await reload()
     } catch (e) { fail(e) }
   }
 
-  const deactivateCommon = async (r) => {
-    if (!window.confirm(`[${r.common_code}] 미사용 처리할까요?`)) return
+  const removeCommon = async (r) => {
+    if (!window.confirm(`[${r.common_code}] ${r.name}\n\n연결된 지표마스터·평가·실적 데이터가 없으면 삭제합니다. 계속할까요?`)) return
     try {
-      await api.updateCommon(r.common_code, {
-        name: r.name,
-        unit: r.unit,
-        use_yn: 'N',
-        ...pickLv3DefinitionFromRow(r),
-      })
-      note('미사용 처리됨')
+      await api.deleteCommon(r.common_code)
+      note(`${r.common_code}를 삭제했습니다.`)
       await reload()
     } catch (e) { fail(e) }
   }
@@ -205,12 +194,61 @@ export default function CodebookAdminView() {
     })
   }
   const removeLv = async (kind, row) => {
-    const label = kind === 'lv1' ? 'Lv1' : 'Lv2'
+    const label = kind === 'lv1' ? 'Category' : '지표Seg'
     if (!window.confirm(`[${row.code}] ${row.name}\n\n연결된 Lv3가 없으면 삭제합니다. 계속할까요?`)) return
     try {
       if (kind === 'lv1') await api.deleteLv1(row.code)
       else await api.deleteLv2(row.code)
       note(`${label} ${row.code}를 삭제했습니다.`)
+      await reload()
+    } catch (e) { fail(e) }
+  }
+
+  const moveCodebookRow = async (kind, row, direction) => {
+    const config = {
+      group: {
+        rows: groupTreeRows,
+        key: 'code',
+        save: (r, sort_order) => api.updateGroup(r.code, {
+          name: r.name, sort_order, use_yn: r.use_yn || 'Y',
+          org_level: r.org_level, parent_code: r.parent_code || '',
+        }),
+      },
+      lv1: {
+        rows: lv1List,
+        key: 'code',
+        save: (r, sort_order) => api.updateLv1(r.code, { name: r.name, sort_order, use_yn: r.use_yn || 'Y' }),
+      },
+      lv2: {
+        rows: lv2Options,
+        key: 'code',
+        save: (r, sort_order) => api.updateLv2(r.code, { name: r.name, sort_order, use_yn: r.use_yn || 'Y' }),
+      },
+      common: {
+        rows: commons,
+        key: 'common_code',
+        save: (r, sort_order) => api.updateCommon(r.common_code, {
+          name: r.name, unit: r.unit || '', sort_order, ...pickLv3DefinitionFromRow(r),
+        }),
+      },
+      code: {
+        rows: codes,
+        key: 'indicator_code',
+        save: (r, sort_order) => api.updateCode(r.indicator_code, {
+          display_name: r.display_name || '', sort_order,
+          ...pickMasterDefinitionFromRow(r.master_definition || r),
+        }),
+      },
+    }[kind]
+    if (!config) return
+    const rows = [...config.rows]
+    const index = rows.findIndex((r) => r[config.key] === row[config.key])
+    const target = index + direction
+    if (index < 0 || target < 0 || target >= rows.length) return
+    ;[rows[index], rows[target]] = [rows[target], rows[index]]
+    try {
+      await Promise.all(rows.map((r, order) => config.save(r, order)))
+      note('표시순서를 변경했습니다.')
       await reload()
     } catch (e) { fail(e) }
   }
@@ -302,17 +340,18 @@ export default function CodebookAdminView() {
         lv3_code: commonEditor.lv3_code,
         name: commonEditor.name,
         unit: commonEditor.unit || '',
+        sort_order: commons.length,
         ...defs,
       })
     } else {
       await api.updateCommon(commonEditor.common_code, {
         name: commonEditor.name,
         unit: commonEditor.unit || '',
-        use_yn: commonEditor.use_yn || 'Y',
+        sort_order: Number(commonEditor.sort_order) || 0,
         ...defs,
       })
     }
-    note('Lv3를 저장했습니다.')
+      note('Lv3를 저장했습니다.')
     setDupCheck(null)
     setCommonEditor(null)
     await reload()
@@ -361,8 +400,8 @@ export default function CodebookAdminView() {
         return { ...p, ...patch }
       })
       const missed = []
-      if (commonEditor?._new && rec.lv1_unmatched) missed.push('Lv1')
-      if (commonEditor?._new && rec.lv2_unmatched) missed.push('Lv2')
+      if (commonEditor?._new && rec.lv1_unmatched) missed.push('Category')
+      if (commonEditor?._new && rec.lv2_unmatched) missed.push('지표Seg')
       const similar = findSimilarCommons(commons, name)
       const similarNote = similar.length
         ? ` 비슷한 지표 ${similar.length}건이 이미 있습니다. 저장 시 확인합니다.`
@@ -394,7 +433,6 @@ export default function CodebookAdminView() {
   }, [codeEditor, codeLv3Base])
   const filteredCodes = useMemo(() => {
     let list = codes
-    if (!showInactive) list = list.filter((r) => (r.use_yn || 'Y') !== 'N')
     if (codeGroupFilter !== '전체') list = list.filter(r => r.group_code === codeGroupFilter)
     if (!codeQ.trim()) return list
     const s = codeQ.trim().toLowerCase()
@@ -403,7 +441,7 @@ export default function CodebookAdminView() {
         r.detailed_definition_text]
         .filter(Boolean).join(' ').toLowerCase().includes(s)
     )
-  }, [codes, codeQ, codeGroupFilter, showInactive])
+  }, [codes, codeQ, codeGroupFilter])
 
   const saveCode = async () => {
     try {
@@ -414,13 +452,14 @@ export default function CodebookAdminView() {
           group_code: codeEditor.group_code,
           perf_code: codeEditor.perf_code,
           display_name: codeEditor.display_name,
+          sort_order: codes.length,
           ...defs,
         })
         note('지표마스터를 추가했습니다.')
       } else {
         await api.updateCode(codeEditor.indicator_code, {
           display_name: codeEditor.display_name,
-          use_yn: codeEditor.use_yn || 'Y',
+          sort_order: Number(codeEditor.sort_order) || 0,
           ...defs,
         })
         note('지표마스터를 수정했습니다.')
@@ -435,7 +474,7 @@ export default function CodebookAdminView() {
     if (!file) return
     try {
       const result = await api.importCodes(file)
-      note(`엑셀 임포트 완료: 그룹 ${result.counts?.owner_group}, Lv1 ${result.counts?.code_lv1}, Lv2 ${result.counts?.code_lv2}, Lv3 ${result.counts?.indicator_common}, 지표마스터 ${result.counts?.indicator_code}`)
+      note(`엑셀 임포트 완료: 그룹 ${result.counts?.owner_group}, Category ${result.counts?.code_lv1}, 지표Seg ${result.counts?.code_lv2}, Lv3 ${result.counts?.indicator_common}, 지표마스터 ${result.counts?.indicator_code}`)
       await reload()
     } catch (e) { fail(e) }
     finally { if (event.target) event.target.value = '' }
@@ -452,7 +491,7 @@ export default function CodebookAdminView() {
   const [formulaCodeQ, setFormulaCodeQ] = useState('')
   const formulaCodeOptions = useMemo(() => {
     const q = formulaCodeQ.trim().toLowerCase()
-    let list = codes.filter((c) => (c.use_yn || 'Y') !== 'N')
+    let list = codes
     if (q) {
       list = list.filter((c) =>
         [c.indicator_code, c.display_name, c.group_code]
@@ -550,7 +589,7 @@ export default function CodebookAdminView() {
 
   const TABS = [
     { id: 'groups', icon: <Users className="w-4 h-4" />, label: '그룹·본부' },
-    { id: 'structure', icon: <Layers className="w-4 h-4" />, label: 'Lv1·Lv2' },
+    { id: 'structure', icon: <Layers className="w-4 h-4" />, label: 'Category·지표Seg' },
     { id: 'common', icon: <ClipboardList className="w-4 h-4" />, label: 'Lv3' },
     { id: 'codes', icon: <Link2 className="w-4 h-4" />, label: '지표마스터' },
     { id: 'formulas', icon: <Calculator className="w-4 h-4" />, label: '가공식' },
@@ -655,7 +694,7 @@ export default function CodebookAdminView() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {groupTreeRows.map(g => (
+                {groupTreeRows.map((g, index) => (
                   <tr key={g.code} className={`${(g.use_yn || 'Y') === 'N' ? 'bg-slate-50/80 opacity-60' : ''}`}>
                     <td className="px-3 py-1.5 font-mono text-violet-700">
                       <span style={{ paddingLeft: `${(g.depth || 0) * 1.25}rem` }} className="inline-flex items-center gap-1">
@@ -681,6 +720,11 @@ export default function CodebookAdminView() {
                     <td className="px-3 py-1.5">{g.sort_order}</td>
                     <td className="px-3 py-1.5">{(g.use_yn || 'Y') === 'Y' ? 'Y' : 'N'}</td>
                     <td className="px-3 py-1.5 text-center">
+                      <CodebookOrderButtons
+                        index={index}
+                        total={groupTreeRows.length}
+                        onMove={(direction) => moveCodebookRow('group', g, direction)}
+                      />
                       <button onClick={() => setGroupEditor({ ...g })} className="p-1 rounded hover:bg-slate-100 text-slate-600"><Pencil className="w-3.5 h-3.5" /></button>
                       {(g.use_yn || 'Y') === 'Y' && (
                         <button onClick={() => deactivateGroup(g)} className="p-1 rounded hover:bg-amber-50 text-amber-700" title="미사용"><Trash2 className="w-3.5 h-3.5" /></button>
@@ -697,28 +741,29 @@ export default function CodebookAdminView() {
       {tab === 'structure' && (
         <div className="space-y-3">
           <p className="text-[11px] text-slate-500">
-            Lv1(대분류)과 Lv2(중분류)는 <span className="font-semibold text-slate-700">독립 마스터</span>입니다.
-            같은 Lv2 코드는 전역에서 동일한 의미이며, Lv3에서 임의의 Lv1×Lv2 조합이 가능합니다.
-            예: 슈퍼SOL(Lv2) + 신규가입(Lv3)을 전행·좌수 / 영업점·Point로 나눠 배정.
+            Category와 지표Seg는 <span className="font-semibold text-slate-700">독립 마스터</span>입니다.
+            같은 지표Seg 코드는 전역에서 동일한 의미이며, Lv3에서 임의의 Category×지표Seg 조합이 가능합니다.
+            예: 슈퍼SOL(지표Seg) + 신규가입(Lv3)을 전행·좌수 / 영업점·Point로 나눠 배정.
           </p>
           <div className="flex gap-2">
-            <button onClick={() => openLv1Create(false)} className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-emerald-700 text-white text-sm"><Plus className="w-4 h-4" /> Lv1 추가</button>
-            <button onClick={() => openLv2Create(false)} className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-violet-600 text-white text-sm"><Plus className="w-4 h-4" /> Lv2 추가</button>
+            <button onClick={() => openLv1Create(false)} className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-emerald-700 text-white text-sm"><Plus className="w-4 h-4" /> Category 추가</button>
+            <button onClick={() => openLv2Create(false)} className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-violet-600 text-white text-sm"><Plus className="w-4 h-4" /> 지표Seg 추가</button>
           </div>
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-            <div className="rounded-xl border border-slate-200 bg-white overflow-hidden shadow-sm">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 items-start">
+            <div className="rounded-xl border border-slate-200 bg-white overflow-hidden shadow-sm self-start w-full">
               <div className="px-4 py-2.5 bg-emerald-800 text-white text-xs font-semibold">
-                Lv1 대분류 ({lv1List.length})
+                Category ({lv1List.length})
               </div>
               <div className="overflow-x-auto max-h-[60vh]">
                 <table className="w-full text-left text-xs">
                   <thead><tr className="bg-slate-50 sticky top-0"><th className="px-3 py-2">코드</th><th className="px-3 py-2">이름</th><th className="px-3 py-2 text-center">관리</th></tr></thead>
                   <tbody className="divide-y divide-slate-100">
-                    {lv1List.map(r => (
+                    {lv1List.map((r, index) => (
                       <tr key={r.code}>
                         <td className="px-3 py-1.5 font-mono text-violet-700">{r.code}</td>
                         <td className="px-3 py-1.5">{r.name}</td>
                         <td className="px-3 py-1.5 text-center">
+                          <CodebookOrderButtons index={index} total={lv1List.length} onMove={(direction) => moveCodebookRow('lv1', r, direction)} />
                           <button onClick={() => setLvEditor({ kind: 'lv1', ...r })} className="p-1 rounded hover:bg-slate-100" title="수정"><Pencil className="w-3.5 h-3.5" /></button>
                           <button onClick={() => removeLv('lv1', r)} className="p-1 rounded hover:bg-rose-50 text-rose-600" title="삭제"><Trash2 className="w-3.5 h-3.5" /></button>
                         </td>
@@ -728,19 +773,20 @@ export default function CodebookAdminView() {
                 </table>
               </div>
             </div>
-            <div className="rounded-xl border border-slate-200 bg-white overflow-hidden shadow-sm">
+            <div className="rounded-xl border border-slate-200 bg-white overflow-hidden shadow-sm self-start w-full">
               <div className="px-4 py-2.5 bg-violet-800 text-white text-xs font-semibold">
-                Lv2 중분류 ({lv2Options.length})
+                지표Seg ({lv2Options.length})
               </div>
               <div className="overflow-x-auto max-h-[60vh]">
                 <table className="w-full text-left text-xs">
                   <thead><tr className="bg-slate-50 sticky top-0"><th className="px-3 py-2">코드</th><th className="px-3 py-2">이름</th><th className="px-3 py-2 text-center">관리</th></tr></thead>
                   <tbody className="divide-y divide-slate-100">
-                    {lv2Options.map(r => (
+                    {lv2Options.map((r, index) => (
                       <tr key={r.code}>
                         <td className="px-3 py-1.5 font-mono text-violet-700">{r.code}</td>
                         <td className="px-3 py-1.5">{r.name}</td>
                         <td className="px-3 py-1.5 text-center">
+                          <CodebookOrderButtons index={index} total={lv2Options.length} onMove={(direction) => moveCodebookRow('lv2', r, direction)} />
                           <button onClick={() => setLvEditor({ kind: 'lv2', ...r })} className="p-1 rounded hover:bg-slate-100" title="수정"><Pencil className="w-3.5 h-3.5" /></button>
                           <button onClick={() => removeLv('lv2', r)} className="p-1 rounded hover:bg-rose-50 text-rose-600" title="삭제"><Trash2 className="w-3.5 h-3.5" /></button>
                         </td>
@@ -777,9 +823,9 @@ export default function CodebookAdminView() {
           <div className="rounded-xl border border-slate-200 bg-white overflow-hidden shadow-sm">
             <div className="overflow-x-auto max-h-[60vh]">
               <table className="w-full text-left text-xs">
-                <thead><tr className="bg-red-800 text-white sticky top-0">{['Lv3코드', 'Lv1', 'Lv2', 'Lv3', '지표명', '단위', '정의', '관리'].map(h => <th key={h} className="px-2 py-2 whitespace-nowrap">{h}</th>)}</tr></thead>
+                <thead><tr className="bg-red-800 text-white sticky top-0">{['Lv3코드', 'Category', '지표Seg', 'Lv3', '지표명', '단위', '정의', '관리'].map(h => <th key={h} className="px-2 py-2 whitespace-nowrap">{h}</th>)}</tr></thead>
                 <tbody className="divide-y divide-slate-100">
-                  {commons.map(r => {
+                  {commons.map((r, index) => {
                     const filled = LV3_DEFINITION_FIELDS.filter(f => String(r[f] || '').trim()).length
                     return (
                       <tr key={r.common_code} className="hover:bg-slate-50/80">
@@ -793,8 +839,9 @@ export default function CodebookAdminView() {
                           <DefinitionBadge filled={filled} total={LV3_DEFINITION_FIELDS.length} />
                         </td>
                         <td className="px-2 py-1.5">
+                          <CodebookOrderButtons index={index} total={commons.length} onMove={(direction) => moveCodebookRow('common', r, direction)} />
                           <button onClick={() => setCommonEditor({ ...emptyLv3Definition(), ...r })} className="p-1 rounded hover:bg-slate-100"><Pencil className="w-3.5 h-3.5" /></button>
-                          <button onClick={() => deactivateCommon(r)} className="p-1 rounded hover:bg-amber-50 text-amber-700" title="미사용"><Trash2 className="w-3.5 h-3.5" /></button>
+                          <button onClick={() => removeCommon(r)} className="p-1 rounded hover:bg-rose-50 text-rose-600" title="삭제"><Trash2 className="w-3.5 h-3.5" /></button>
                         </td>
                       </tr>
                     )
@@ -817,10 +864,6 @@ export default function CodebookAdminView() {
               <option value="전체">그룹: 전체</option>
               {codeGroups.map(g => <option key={g.code} value={g.code}>{g.code} · {g.name}{g.org_level === 'HQ' ? ' (본부)' : ''}</option>)}
             </select>
-            <label className="inline-flex items-center gap-1.5 text-xs text-slate-600">
-              <input type="checkbox" checked={showInactive} onChange={(e) => setShowInactive(e.target.checked)} className="rounded border-slate-300" />
-              미사용 포함
-            </label>
             <button onClick={() => setCodeEditor({
               _new: true,
               common_code: commons[0]?.common_code || '',
@@ -850,13 +893,18 @@ export default function CodebookAdminView() {
                           : <span className="inline-flex rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-400">없음</span>}
                       </td>
                       <td className="px-2 py-1.5">
+                        <CodebookOrderButtons
+                          index={codes.findIndex((item) => item.indicator_code === r.indicator_code)}
+                          total={codes.length}
+                          onMove={(direction) => moveCodebookRow('code', r, direction)}
+                        />
                         <button onClick={() => setCodeEditor({
                           ...r,
                           detailed_definition_text: r.detailed_definition_text || '',
                           owner_group_code: r.master_definition?.owner_group_code || '',
                           dept: r.master_definition?.dept || '',
                         })} className="p-1 rounded hover:bg-slate-100"><Pencil className="w-3.5 h-3.5" /></button>
-                        <button onClick={() => deactivateCode(r)} className="p-1 rounded hover:bg-amber-50 text-amber-700" title="미사용"><Trash2 className="w-3.5 h-3.5" /></button>
+                        <button onClick={() => removeCode(r)} className="p-1 rounded hover:bg-rose-50 text-rose-600" title="삭제"><Trash2 className="w-3.5 h-3.5" /></button>
                       </td>
                     </tr>
                   ))}
@@ -990,7 +1038,7 @@ export default function CodebookAdminView() {
 
       {lvEditor && (
         <Modal
-          title={lvEditor._new ? `${lvEditor.kind.toUpperCase()} 추가` : `${lvEditor.kind.toUpperCase()} 수정`}
+          title={`${lvEditor.kind === 'lv1' ? 'Category' : '지표Seg'} ${lvEditor._new ? '추가' : '수정'}`}
           onClose={() => { setDupCheck(null); setLvEditor(null) }}
           onSave={saveLv}
           stacked={!!commonEditor}
@@ -1070,58 +1118,6 @@ export default function CodebookAdminView() {
 
       {commonEditor && (
         <Modal title={commonEditor._new ? 'Lv3 추가' : `Lv3 ${commonEditor.common_code}`} onClose={() => { setDupCheck(null); setCommonEditor(null) }} onSave={saveCommon} wide>
-          {commonEditor._new ? (
-            <>
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                <div className="text-xs text-slate-600 space-y-1">
-                  <span className="block">Lv1 대분류</span>
-                  <div className="flex gap-2">
-                    <select
-                      value={commonEditor.lv1_code}
-                      onChange={e => setCommonEditor(p => ({ ...p, lv1_code: e.target.value }))}
-                      className="input"
-                    >
-                      <option value="">선택</option>
-                      {lv1List.map(r => <option key={r.code} value={r.code}>{r.code} · {r.name}</option>)}
-                    </select>
-                    <button
-                      type="button"
-                      onClick={() => openLv1Create(true)}
-                      className="shrink-0 inline-flex items-center gap-1 px-2.5 rounded-lg bg-emerald-700 text-white text-xs font-semibold whitespace-nowrap"
-                    >
-                      <Plus className="w-3.5 h-3.5" /> Lv1 추가
-                    </button>
-                  </div>
-                </div>
-                <div className="text-xs text-slate-600 space-y-1">
-                  <span className="block">Lv2 중분류 (독립)</span>
-                  <div className="flex gap-2">
-                    <select
-                      value={commonEditor.lv2_code}
-                      onChange={(e) => setCommonEditor((p) => ({ ...p, lv2_code: e.target.value }))}
-                      className="input"
-                    >
-                      <option value="">선택</option>
-                      {lv2Options.map((r) => (
-                        <option key={r.code} value={r.code}>{r.code} · {r.name}</option>
-                      ))}
-                    </select>
-                    <button
-                      type="button"
-                      onClick={() => openLv2Create(true)}
-                      className="shrink-0 inline-flex items-center gap-1 px-2.5 rounded-lg bg-violet-600 text-white text-xs font-semibold whitespace-nowrap"
-                    >
-                      <Plus className="w-3.5 h-3.5" /> Lv2 추가
-                    </button>
-                  </div>
-                </div>
-              </div>
-              <Field label="Lv3(4자리, 전역 자동배정)">
-                <input value={commonEditor.lv3_code} readOnly className="input bg-slate-50 font-mono" title="기존 최대값+1로 전역 유일 배정" />
-              </Field>
-              <Field label="Lv3코드(미리보기)"><input value={commonPreview} readOnly className="input bg-slate-50 font-mono" /></Field>
-            </>
-          ) : null}
           <div className="text-xs text-slate-600 space-y-1">
             <span className="block">지표명</span>
             <div className="flex gap-2">
@@ -1136,7 +1132,7 @@ export default function CodebookAdminView() {
                 onClick={runAiWizard}
                 disabled={aiBusy}
                 className="shrink-0 inline-flex items-center gap-1 px-3 rounded-lg bg-violet-600 text-white text-xs font-semibold whitespace-nowrap disabled:opacity-50"
-                title="지표명으로 Lv1·Lv2·단위·정의 초안 추천"
+                title="지표명으로 Category·지표Seg·단위·정의 초안 추천"
               >
                 <Sparkles className="w-3.5 h-3.5" />
                 {aiBusy ? '추천 중…' : 'AI마법사'}
@@ -1158,6 +1154,52 @@ export default function CodebookAdminView() {
               </div>
             )}
           </div>
+          {commonEditor._new ? (
+            <>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div className="text-xs text-slate-600 space-y-1">
+                  <span className="block">Category</span>
+                  <div className="flex gap-2">
+                    <SearchableSelect
+                      value={commonEditor.lv1_code}
+                      options={lv1List}
+                      onChange={(value) => setCommonEditor(p => ({ ...p, lv1_code: value }))}
+                      placeholder="Category 코드·이름 검색"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => openLv1Create(true)}
+                      className="shrink-0 inline-flex items-center gap-1 px-2.5 rounded-lg bg-emerald-700 text-white text-xs font-semibold whitespace-nowrap"
+                    >
+                      <Plus className="w-3.5 h-3.5" /> Category 추가
+                    </button>
+                  </div>
+                </div>
+                <div className="text-xs text-slate-600 space-y-1">
+                  <span className="block">지표Seg (독립)</span>
+                  <div className="flex gap-2">
+                    <SearchableSelect
+                      value={commonEditor.lv2_code}
+                      options={lv2Options}
+                      onChange={(value) => setCommonEditor((p) => ({ ...p, lv2_code: value }))}
+                      placeholder="지표Seg 코드·이름 검색"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => openLv2Create(true)}
+                      className="shrink-0 inline-flex items-center gap-1 px-2.5 rounded-lg bg-violet-600 text-white text-xs font-semibold whitespace-nowrap"
+                    >
+                      <Plus className="w-3.5 h-3.5" /> 지표Seg 추가
+                    </button>
+                  </div>
+                </div>
+              </div>
+              <Field label="Lv3(4자리, 전역 자동배정)">
+                <input value={commonEditor.lv3_code} readOnly className="input bg-slate-50 font-mono" title="기존 최대값+1로 전역 유일 배정" />
+              </Field>
+              <Field label="Lv3코드(미리보기)"><input value={commonPreview} readOnly className="input bg-slate-50 font-mono" /></Field>
+            </>
+          ) : null}
           <div className="grid grid-cols-2 gap-3">
             <Field label="단위"><input value={commonEditor.unit || ''} onChange={e => setCommonEditor(p => ({ ...p, unit: e.target.value }))} className="input" placeholder="원, %, 명, 건 …" /></Field>
           </div>
@@ -1176,9 +1218,13 @@ export default function CodebookAdminView() {
           {codeEditor._new ? (
             <>
               <Field label="Lv3">
-                <select value={codeEditor.common_code} onChange={e => setCodeEditor(p => ({ ...p, common_code: e.target.value }))} className="input">
-                  {commons.map(r => <option key={r.common_code} value={r.common_code}>{r.common_code} · {r.name}</option>)}
-                </select>
+                <SearchableSelect
+                  value={codeEditor.common_code}
+                  options={commons}
+                  valueKey="common_code"
+                  onChange={(value) => setCodeEditor(p => ({ ...p, common_code: value }))}
+                  placeholder="Lv3 코드·지표명 검색"
+                />
               </Field>
               <Field label="코드 그룹 (지표코드 suffix)">
                 <select value={codeEditor.group_code} onChange={e => setCodeEditor(p => ({ ...p, group_code: e.target.value }))} className="input">
@@ -1248,12 +1294,6 @@ export default function CodebookAdminView() {
               placeholder="그룹·실적구분별 예외·세부 산식·필터 조건 등. 비우면 Lv3 공통 정의만 사용합니다."
             />
           </Field>
-          <Field label="사용">
-            <select value={codeEditor.use_yn || 'Y'} onChange={(e) => setCodeEditor((p) => ({ ...p, use_yn: e.target.value }))} className="input">
-              <option value="Y">사용</option>
-              <option value="N">미사용</option>
-            </select>
-          </Field>
           {codeMergePreview && (
             <MergePreview merged={codeMergePreview} groups={groups} />
           )}
@@ -1314,30 +1354,11 @@ export default function CodebookAdminView() {
             </div>
             {Object.entries(formulaEditor.operands || {}).map(([key, val]) => (
               <div key={key} className="flex gap-2 items-center">
-                <input
-                  defaultValue={key}
-                  onBlur={(e) => {
-                    const v = String(e.target.value || '').trim()
-                    if (!v) {
-                      e.target.value = key
-                      fail(new Error('피연산자 이름은 비울 수 없습니다.'))
-                      return
-                    }
-                    if (!isValidOperandKey(v)) {
-                      e.target.value = key
-                      fail(new Error(`피연산자 이름 "${v}"이(가) 올바르지 않습니다. 한글·영문으로 시작, 공백 불가.`))
-                      return
-                    }
-                    if (v !== key && Object.prototype.hasOwnProperty.call(formulaEditor.operands || {}, v)) {
-                      e.target.value = key
-                      fail(new Error(`피연산자 이름 "${v}"이(가) 이미 있습니다.`))
-                      return
-                    }
-                    renameOperandKey(key, v)
-                  }}
-                  className="input !w-24 font-semibold text-sm"
-                  title="식에서 쓰는 변수명 (한글 가능)"
-                  placeholder="항목1"
+                <OperandNameInput
+                  name={key}
+                  operands={formulaEditor.operands || {}}
+                  onRename={renameOperandKey}
+                  onError={(message) => fail(new Error(message))}
                 />
                 <input
                   list={`formula-op-${key}`}
@@ -1442,6 +1463,161 @@ function Field({ label, children }) {
       <span>{label}</span>
       {children}
     </label>
+  )
+}
+
+function OperandNameInput({ name, operands, onRename, onError }) {
+  const [draft, setDraft] = useState(name)
+  const draftRef = useRef(name)
+  const composing = useRef(false)
+
+  useEffect(() => {
+    setDraft(name)
+    draftRef.current = name
+  }, [name])
+
+  const updateDraft = (value) => {
+    draftRef.current = value
+    setDraft(value)
+  }
+  const commit = () => {
+    if (composing.current) return
+    const value = String(draftRef.current || '').trim()
+    if (!value) {
+      updateDraft(name)
+      onError('피연산자 이름은 비울 수 없습니다.')
+      return
+    }
+    if (!isValidOperandKey(value)) {
+      updateDraft(name)
+      onError(`피연산자 이름 "${value}"이(가) 올바르지 않습니다. 한글·영문으로 시작, 공백 불가.`)
+      return
+    }
+    if (value !== name && Object.prototype.hasOwnProperty.call(operands, value)) {
+      updateDraft(name)
+      onError(`피연산자 이름 "${value}"이(가) 이미 있습니다.`)
+      return
+    }
+    if (value !== name) onRename(name, value)
+  }
+
+  return (
+    <input
+      value={draft}
+      onChange={(e) => updateDraft(e.target.value)}
+      onCompositionStart={() => { composing.current = true }}
+      onCompositionEnd={(e) => {
+        composing.current = false
+        updateDraft(e.currentTarget.value)
+      }}
+      onBlur={() => window.setTimeout(commit, 0)}
+      className="input !w-24 font-semibold text-sm"
+      title="식에서 쓰는 변수명 (한글 가능)"
+      placeholder="항목1"
+    />
+  )
+}
+
+function CodebookOrderButtons({ index, total, onMove }) {
+  return (
+    <span className="mr-1 inline-flex items-center gap-0.5 align-middle">
+      <button
+        type="button"
+        disabled={index <= 0}
+        onClick={() => onMove(-1)}
+        className="rounded p-0.5 text-slate-500 hover:bg-slate-100 disabled:cursor-default disabled:opacity-25"
+        title="위로"
+      >
+        <ArrowUp className="h-3.5 w-3.5" />
+      </button>
+      <button
+        type="button"
+        disabled={index < 0 || index >= total - 1}
+        onClick={() => onMove(1)}
+        className="rounded p-0.5 text-slate-500 hover:bg-slate-100 disabled:cursor-default disabled:opacity-25"
+        title="아래로"
+      >
+        <ArrowDown className="h-3.5 w-3.5" />
+      </button>
+    </span>
+  )
+}
+
+/**
+ * 검색 입력은 이 컴포넌트의 로컬 state에서만 처리한다.
+ * 부모의 큰 코드북 화면을 매 키 입력마다 다시 렌더링하지 않아 항목이 많아도 버벅이지 않는다.
+ */
+function SearchableSelect({
+  value,
+  options = [],
+  onChange,
+  valueKey = 'code',
+  nameKey = 'name',
+  placeholder = '코드·이름 검색',
+}) {
+  const selected = useMemo(
+    () => options.find((row) => String(row?.[valueKey] || '') === String(value || '')) || null,
+    [options, value, valueKey],
+  )
+  const selectedLabel = selected
+    ? `${selected[valueKey]} · ${selected[nameKey] || ''}`.trim()
+    : ''
+  const [query, setQuery] = useState(selectedLabel)
+  const [open, setOpen] = useState(false)
+
+  useEffect(() => {
+    if (!open) setQuery(selectedLabel)
+  }, [selectedLabel, open])
+
+  const matches = useMemo(() => {
+    const q = query.trim().toLocaleLowerCase('ko')
+    const rows = q
+      ? options.filter((row) => (
+        `${row?.[valueKey] || ''} ${row?.[nameKey] || ''}`.toLocaleLowerCase('ko').includes(q)
+      ))
+      : options
+    return rows.slice(0, 80)
+  }, [options, query, valueKey, nameKey])
+
+  return (
+    <div className="relative w-full">
+      <input
+        type="search"
+        value={query}
+        onFocus={() => { setOpen(true); setQuery('') }}
+        onBlur={() => window.setTimeout(() => setOpen(false), 120)}
+        onChange={(e) => { setQuery(e.target.value); setOpen(true) }}
+        className="input"
+        placeholder={placeholder}
+        autoComplete="off"
+      />
+      {open && (
+        <div className="absolute z-[90] mt-1 max-h-56 w-full overflow-y-auto rounded-lg border border-slate-200 bg-white shadow-xl">
+          {matches.map((row) => {
+            const code = String(row?.[valueKey] || '')
+            return (
+              <button
+                key={code}
+                type="button"
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => {
+                  onChange(code)
+                  setQuery(`${code} · ${row?.[nameKey] || ''}`.trim())
+                  setOpen(false)
+                }}
+                className={`block w-full px-3 py-2 text-left text-xs hover:bg-violet-50 ${
+                  code === String(value || '') ? 'bg-violet-50 text-violet-800' : 'text-slate-700'
+                }`}
+              >
+                <span className="font-mono">{code}</span>
+                <span className="ml-2">{row?.[nameKey] || ''}</span>
+              </button>
+            )
+          })}
+          {!matches.length && <p className="px-3 py-3 text-xs text-slate-400">검색 결과가 없습니다.</p>}
+        </div>
+      )}
+    </div>
   )
 }
 

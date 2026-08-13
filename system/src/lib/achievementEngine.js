@@ -80,11 +80,11 @@ export function applyAchievementPolicy(def, rawAchievement) {
   const raw = Number(rawAchievement)
   if (!Number.isFinite(raw)) return null
 
-  const lowerCap = parsePercentLike(def?.capMin ?? def?.cap_min, 0)
+  const lowerCap = parsePercentLike(def?.capMin ?? def?.cap_min, 40)
   const upperCap = parsePercentLike(def?.capMax ?? def?.cap_max, 150)
   const scoreMultiplier = parsePercentLike(def?.scoreRule ?? def?.score_rule, 1)
-  const adjustBand = parsePercentLike(def?.adjBand ?? def?.adj_band, null)
-  const adjustMultiplier = parsePercentLike(def?.penaltyRule ?? def?.penalty_rule, null)
+  const adjustBand = parsePercentLike(def?.adjBand ?? def?.adj_band, 120)
+  const adjustMultiplier = parsePercentLike(def?.penaltyRule ?? def?.penalty_rule, 0.1)
 
   // 승수는 100을 기준으로 초과/미달 폭에만 적용한다.
   let adjusted = 100 + ((raw - 100) * scoreMultiplier)
