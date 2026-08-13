@@ -8,8 +8,9 @@ ngrok/이 PC 없이도 데이터가 유지됩니다.
 1. [railway.app](https://railway.app) 가입/로그인
 2. **New Project** → **Deploy from GitHub repo** → `KPIautomaticAgent` 선택
 3. 서비스 설정:
-   - **Root Directory**: `server`
-   - Builder: Dockerfile (`server/Dockerfile` 자동 감지)
+   - **Root Directory**: `server`  *(또는 비우고 루트 `railway.toml`이 `server/Dockerfile`을 가리키게)*
+   - **Builder**: **Dockerfile** 로 고정 (Settings → Build)
+   - Custom Build Command가 `pip install ...` 이면 **삭제** (Dockerfile이 설치함)
 4. **Variables** 추가:
    - `HOST` = `0.0.0.0`
    - `PYTHONUNBUFFERED` = `1`
@@ -65,6 +66,7 @@ railway domain
 
 ## 트러블슈팅
 
+- `pip: not found`: Builder가 Dockerfile이 아님. Settings → Build → **Dockerfile** 선택, Custom Build Command 비우기 후 Redeploy
 - `/api/health` 502: 배포 로그에서 `KPI API http://0.0.0.0:...` 기동 확인
 - 데이터 날아감: Volume mount `/data` + `KPI_DATA_DIR=/data` 확인
 - Vercel이 예전 API 침: `VITE_API_BASE` 바꾸고 **반드시 Redeploy**

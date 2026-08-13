@@ -1,0 +1,9 @@
+# Dockerfile이 무시되고 Nixpacks/Railpack로 빌드될 때 대비
+[phases.setup]
+nixPkgs = ["python312", "gcc"]
+
+[phases.install]
+cmds = ["python -m ensurepip --upgrade", "python -m pip install --upgrade pip", "python -m pip install -r requirements.txt"]
+
+[start]
+cmd = "python kpi_api.py"
