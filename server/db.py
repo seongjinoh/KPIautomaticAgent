@@ -79,6 +79,8 @@ def init_schema(conn: sqlite3.Connection | None = None) -> None:
         migrate_s22_to_sg2(conn)
         migrate_lv3_unique(conn)
         migrate_lv2_from_0001(conn)
+        from auth_users import ensure_auth_tables
+        ensure_auth_tables(conn)
         # 가라 데모 지표 자동 재주입 비활성 (필요 시 SEED_SUPERSOL_DEMO=1)
         if os.environ.get("SEED_SUPERSOL_DEMO", "").strip() in ("1", "true", "TRUE", "yes"):
             seed_supersol_demo(conn)
@@ -100,6 +102,7 @@ def counts(conn: sqlite3.Connection) -> dict:
         "fact_group_confirm", "fact_period_status",
         "group_score_result", "score_rollup_set", "score_rollup_rule",
         "score_rollup_term", "score_rollup_term_group",
+        "app_user", "app_auth_audit",
     ]
     out = {}
     for t in tables:

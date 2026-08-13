@@ -1,6 +1,14 @@
-import { useMemo, useState } from 'react'
-import { Plus, Save, Shield, Search } from 'lucide-react'
-import { ROLE_LABELS, ROLES, hashPassword, listUsers, roleDescription, upsertUser } from '../lib/authService'
+import { useEffect, useMemo, useState } from 'react'
+import { Plus, Save, Shield, Search, Upload } from 'lucide-react'
+import {
+  ROLE_LABELS,
+  ROLES,
+  listUsers,
+  readLegacyLocalUsers,
+  roleDescription,
+  syncLegacyUsersToServer,
+  upsertUser,
+} from '../lib/authService'
 
 const emptyDraft = {
   employeeNo: '',
@@ -15,10 +23,29 @@ const emptyDraft = {
 }
 
 export default function UserAdminView({ groups = [] }) {
-  const [users, setUsers] = useState(() => listUsers())
+  const [users, setUsers] = useState([])
+  const [loading, setLoading] = useState(true)
   const [query, setQuery] = useState('')
   const [draft, setDraft] = useState(emptyDraft)
   const [message, setMessage] = useState('')
+  const [saving, setSaving] = useState(false)
+  const legacyCount = useMemo(() => readLegacyLocalUsers().length, [users, message])
+
+  const reload = async () => {
+    setLoading(true)
+    try {
+      const items = await listUsers()
+      setUsers(items)
+    } catch (e) {
+      setMessage(e?.data?.message || e?.message || '사용자 목록을 불러오지 못했습니다.')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    reload()
+  }, [])
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -55,7 +82,7 @@ export default function UserAdminView({ groups = [] }) {
     })
   }
 
-  const save = () => {
+  const save = async () => {
     if (!/^\d{8}$/.test(draft.employeeNo)) {
       setMessage('사번은 8자리 숫자여야 합니다.')
       return
@@ -80,45 +107,93 @@ export default function UserAdminView({ groups = [] }) {
 
     const allowedGroups = Array.isArray(draft.allowedGroups) ? draft.allowedGroups.filter(Boolean) : []
     const payload = {
-      ...draft,
+      id: draft.id,
+      employeeNo: draft.employeeNo,
+      name: draft.name,
+      role: draft.role,
+      department: draft.department,
       allowedGroups,
       group: allowedGroups[0] || '',
       allowedDepartments,
-      passwordHash: draft.password ? hashPassword(draft.password) : draft.passwordHash,
+      active: draft.active !== false,
     }
-    delete payload.password
-    delete payload.allowedDepartmentsText
+    if (draft.password) payload.password = draft.password
 
-    const next = upsertUser(payload)
-    setUsers(next)
-    setMessage('권한 정보가 저장되었습니다.')
-    setDraft(emptyDraft)
+    setSaving(true)
+    try {
+      const next = await upsertUser(payload)
+      setUsers(next)
+      setMessage('서버에 권한 정보가 저장되었습니다. 다른 PC에서도 로그인할 수 있습니다.')
+      setDraft(emptyDraft)
+    } catch (e) {
+      setMessage(e?.data?.message || e?.message || '저장에 실패했습니다.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const syncLegacy = async () => {
+    setSaving(true)
+    try {
+      const result = await syncLegacyUsersToServer()
+      if (result?.ok === false && result?.reason) {
+        setMessage(result.reason)
+        return
+      }
+      await reload()
+      const errN = (result?.errors || []).length
+      setMessage(
+        `로컬 사용자 ${result?.imported ?? 0}명을 서버로 이관했습니다.`
+        + (errN ? ` (실패 ${errN}건)` : '')
+        + ' 이제 다른 PC에서도 동일 계정으로 로그인됩니다.',
+      )
+    } catch (e) {
+      setMessage(e?.data?.message || e?.message || '이관에 실패했습니다.')
+    } finally {
+      setSaving(false)
+    }
   }
 
   return (
     <div className="space-y-5">
       <div className="rounded-2xl bg-white border border-slate-100 shadow-sm p-5">
-        <div className="flex items-start justify-between gap-4">
+        <div className="flex items-start justify-between gap-4 flex-wrap">
           <div>
             <div className="flex items-center gap-2">
               <Shield className="w-5 h-5 text-blue-600" />
               <h3 className="text-base font-black text-slate-800">사용자 권한관리</h3>
             </div>
             <p className="text-xs text-slate-500 mt-1">
-              POC 회원정보DB(localStorage) 기준입니다. 행내 운영 시 사내 SSO/권한시스템 연동으로 대체해야 합니다.
+              사용자 정보는 서버(SQLite)에 저장됩니다. 한 번 등록하면 모든 PC에서 로그인할 수 있습니다.
             </p>
           </div>
-          <button onClick={resetDraft} className="flex items-center gap-1.5 rounded-lg bg-slate-900 px-3 py-2 text-xs font-bold text-white">
-            <Plus className="w-3.5 h-3.5" />
-            신규 사용자
-          </button>
+          <div className="flex items-center gap-2">
+            {legacyCount > 0 && (
+              <button
+                type="button"
+                disabled={saving}
+                onClick={syncLegacy}
+                className="flex items-center gap-1.5 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-900 disabled:opacity-50"
+                title="이 브라우저 localStorage에 남아 있는 예전 사용자를 서버로 옮깁니다"
+              >
+                <Upload className="w-3.5 h-3.5" />
+                로컬 {legacyCount}명 → 서버 이관
+              </button>
+            )}
+            <button onClick={resetDraft} className="flex items-center gap-1.5 rounded-lg bg-slate-900 px-3 py-2 text-xs font-bold text-white">
+              <Plus className="w-3.5 h-3.5" />
+              신규 사용자
+            </button>
+          </div>
         </div>
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-[1.25fr_0.95fr] gap-5">
         <section className="rounded-2xl bg-white border border-slate-100 shadow-sm overflow-hidden">
           <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between gap-3">
-            <h4 className="text-sm font-bold text-slate-700">회원 목록</h4>
+            <h4 className="text-sm font-bold text-slate-700">
+              회원 목록 {loading ? '(불러오는 중…)' : `(${users.length})`}
+            </h4>
             <div className="flex items-center gap-2 rounded-lg bg-slate-50 border border-slate-200 px-2.5 py-1.5">
               <Search className="w-3.5 h-3.5 text-slate-400" />
               <input
@@ -160,6 +235,11 @@ export default function UserAdminView({ groups = [] }) {
                     </td>
                   </tr>
                 ))}
+                {!loading && filtered.length === 0 && (
+                  <tr>
+                    <td colSpan={6} className="px-3 py-8 text-center text-xs text-slate-400">등록된 사용자가 없습니다.</td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>
@@ -211,12 +291,17 @@ export default function UserAdminView({ groups = [] }) {
               활성 사용자
             </label>
 
-            {message && <p className="rounded-lg bg-slate-50 border border-slate-200 px-3 py-2 text-xs text-slate-600">{message}</p>}
+            {message && <p className="rounded-lg bg-slate-50 border border-slate-200 px-3 py-2 text-xs text-slate-600 whitespace-pre-wrap">{message}</p>}
           </div>
           <div className="px-4 py-3 border-t border-slate-100 flex justify-end">
-            <button onClick={save} className="flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-2 text-xs font-bold text-white hover:bg-blue-700">
+            <button
+              type="button"
+              disabled={saving}
+              onClick={save}
+              className="flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-2 text-xs font-bold text-white hover:bg-blue-700 disabled:opacity-50"
+            >
               <Save className="w-3.5 h-3.5" />
-              저장
+              {saving ? '저장 중…' : '저장'}
             </button>
           </div>
         </section>

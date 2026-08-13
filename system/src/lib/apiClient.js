@@ -365,4 +365,15 @@ export const api = {
     form.append('file', file)
     return request(`/api/facts/dept-entry/import?${q.toString()}`, { method: 'POST', body: form })
   },
+
+  listAuthUsers: () => request('/api/auth/users'),
+  upsertAuthUser: (body) => request('/api/auth/users', { method: 'POST', body: JSON.stringify(body) }),
+  importAuthUsers: (users) => request('/api/auth/users/import', {
+    method: 'POST',
+    body: JSON.stringify({ users }),
+  }),
+  loginAuth: (employeeNo, password) => request('/api/auth/login', {
+    method: 'POST',
+    body: JSON.stringify({ employeeNo, password }),
+  }),
 }

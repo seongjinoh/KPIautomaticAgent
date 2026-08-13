@@ -1,6 +1,9 @@
-const USER_DB_KEY = 'auth.users.v1'
+import { api } from './apiClient'
+
 const SESSION_KEY = 'auth.session.v1'
 const AUDIT_LOG_KEY = 'auth.audit.v1'
+/** 예전 브라우저 로컬 사용자 DB — 서버 이관용으로만 읽음 */
+const LEGACY_USER_DB_KEY = 'auth.users.v1'
 
 export const ROLES = {
   ADMIN: 'admin',
@@ -15,57 +18,6 @@ export const ROLE_LABELS = {
   [ROLES.GROUP_ADMIN]: '그룹별 관리자',
   [ROLES.DEPT_ADMIN]: '부서별 관리자',
 }
-
-const DEFAULT_USERS = [
-  {
-    id: 'u-admin',
-    employeeNo: '00000001',
-    name: '시스템 관리자',
-    passwordHash: hashPassword('admin123!'),
-    role: ROLES.ADMIN,
-    group: '',
-    department: '디지털혁신부',
-    allowedGroups: [],
-    allowedDepartments: [],
-    active: true,
-  },
-  {
-    id: 'u-exec',
-    employeeNo: '00000002',
-    name: '임원 사용자',
-    passwordHash: hashPassword('exec123!'),
-    role: ROLES.EXECUTIVE,
-    group: '',
-    department: '경영진',
-    allowedGroups: [],
-    allowedDepartments: [],
-    active: true,
-  },
-  {
-    id: 'u-group',
-    employeeNo: '10000001',
-    name: '영업추진1그룹 관리자',
-    passwordHash: hashPassword('group123!'),
-    role: ROLES.GROUP_ADMIN,
-    group: '영업추진1그룹',
-    department: '영업추진1부',
-    allowedGroups: ['영업추진1그룹'],
-    allowedDepartments: [],
-    active: true,
-  },
-  {
-    id: 'u-dept',
-    employeeNo: '20000001',
-    name: '고객솔루션부 관리자',
-    passwordHash: hashPassword('dept123!'),
-    role: ROLES.DEPT_ADMIN,
-    group: '고객솔루션그룹',
-    department: '고객솔루션부',
-    allowedGroups: ['고객솔루션그룹'],
-    allowedDepartments: ['고객솔루션부'],
-    active: true,
-  },
-]
 
 function readJson(key, fallback) {
   if (typeof window === 'undefined') return fallback
@@ -82,8 +34,8 @@ function writeJson(key, value) {
   window.localStorage.setItem(key, JSON.stringify(value))
 }
 
+/** @deprecated 서버에서 해싱. 이관·OTP용으로만 유지 */
 export function hashPassword(value) {
-  // POC 전용 단방향 해시. 운영 반입 시에는 서버에서 bcrypt/argon2와 사내 SSO로 대체한다.
   let h = 2166136261
   const text = String(value ?? '')
   for (let i = 0; i < text.length; i += 1) {
@@ -93,71 +45,80 @@ export function hashPassword(value) {
   return `poc-${(h >>> 0).toString(16).padStart(8, '0')}`
 }
 
-export function ensureUserDb() {
-  const users = readJson(USER_DB_KEY, null)
-  if (Array.isArray(users) && users.length > 0) return users
-  writeJson(USER_DB_KEY, DEFAULT_USERS)
-  return DEFAULT_USERS
+export async function listUsers() {
+  const data = await api.listAuthUsers()
+  return data?.items || []
 }
 
-export function listUsers() {
-  return ensureUserDb()
-}
-
-export function saveUsers(users) {
-  writeJson(USER_DB_KEY, users)
-  return users
-}
-
-export function upsertUser(user) {
-  const users = listUsers()
-  const normalized = {
-    ...user,
+export async function upsertUser(user) {
+  const payload = {
+    id: user.id,
     employeeNo: String(user.employeeNo ?? '').trim(),
+    name: user.name,
+    role: user.role,
+    group: user.group || '',
+    department: user.department || '',
     allowedGroups: Array.isArray(user.allowedGroups) ? user.allowedGroups : [],
     allowedDepartments: Array.isArray(user.allowedDepartments) ? user.allowedDepartments : [],
     active: user.active !== false,
   }
-  const next = normalized.id
-    ? users.map(u => u.id === normalized.id ? { ...u, ...normalized } : u)
-    : [...users, { ...normalized, id: `u-${Date.now()}` }]
-  saveUsers(next)
+  if (user.password) payload.password = user.password
+  else if (user.passwordHash) payload.passwordHash = user.passwordHash
+  await api.upsertAuthUser(payload)
   appendAuthAudit({
     eventType: 'PERMISSION_CHANGED',
-    employeeNo: normalized.employeeNo,
-    userId: normalized.id,
+    employeeNo: payload.employeeNo,
+    userId: payload.id,
     result: 'SUCCESS',
-    reason: normalized.id ? '사용자 권한 수정' : '신규 사용자 등록',
+    reason: payload.id ? '사용자 권한 수정' : '신규 사용자 등록',
   })
-  return next
+  return listUsers()
 }
 
-export function loginWithPassword(employeeNo, password) {
-  const verified = verifyPassword(employeeNo, password)
+/** 이 PC localStorage에만 있던 사용자를 서버로 일괄 이관 */
+export function readLegacyLocalUsers() {
+  const users = readJson(LEGACY_USER_DB_KEY, null)
+  return Array.isArray(users) ? users : []
+}
+
+export async function syncLegacyUsersToServer() {
+  const legacy = readLegacyLocalUsers()
+  if (!legacy.length) {
+    return { ok: false, reason: '이 브라우저에 이관할 로컬 사용자가 없습니다.' }
+  }
+  const result = await api.importAuthUsers(legacy)
+  return result
+}
+
+export async function loginWithPassword(employeeNo, password) {
+  const verified = await verifyPassword(employeeNo, password)
   if (!verified.ok) return verified
   return establishSession(verified.user, { mfaMethod: 'password_only' })
 }
 
-/** 1단계: 사번·비밀번호 검증 (세션 미생성) */
-export function verifyPassword(employeeNo, password) {
+/** 1단계: 사번·비밀번호 검증 (서버) — 세션 미생성 */
+export async function verifyPassword(employeeNo, password) {
   const normalizedNo = String(employeeNo ?? '').trim()
   if (!/^\d{8}$/.test(normalizedNo)) {
     appendAuthAudit({ eventType: 'LOGIN_FAILED', employeeNo: normalizedNo, result: 'FAIL', reason: 'INVALID_EMPLOYEE_NO' })
     return { ok: false, reason: '사번은 8자리 숫자로 입력해 주세요.' }
   }
-
-  const user = listUsers().find(u => u.employeeNo === normalizedNo)
-  if (!user || user.active === false) {
-    appendAuthAudit({ eventType: 'LOGIN_FAILED', employeeNo: normalizedNo, result: 'FAIL', reason: 'USER_NOT_FOUND_OR_INACTIVE' })
-    return { ok: false, reason: '사용자를 찾을 수 없거나 비활성 상태입니다.' }
+  try {
+    const data = await api.loginAuth(normalizedNo, password)
+    if (!data?.ok || !data?.user) {
+      return { ok: false, reason: data?.reason || '로그인에 실패했습니다.' }
+    }
+    return { ok: true, user: sanitizeUser(data.user) }
+  } catch (e) {
+    const reason = e?.data?.reason || e?.data?.message || e?.message || '로그인에 실패했습니다.'
+    appendAuthAudit({
+      eventType: 'LOGIN_FAILED',
+      employeeNo: normalizedNo,
+      result: 'FAIL',
+      reason: String(reason).slice(0, 200),
+    })
+    return { ok: false, reason }
   }
-
-  if (user.passwordHash !== hashPassword(password)) {
-    appendAuthAudit({ eventType: 'LOGIN_FAILED', employeeNo: normalizedNo, userId: user.id, result: 'FAIL', reason: 'BAD_CREDENTIAL' })
-    return { ok: false, reason: '사번 또는 비밀번호가 올바르지 않습니다.' }
-  }
-
-  return { ok: true, user: sanitizeUser(user) }
 }
 
 export function establishSession(user, { mfaMethod = '' } = {}) {
@@ -188,20 +149,12 @@ function generateOtp() {
 
 /**
  * SMS OTP 발송 (POC 스텁).
- * 운영 API 설계:
- *   POST /api/auth/sms/send
- *   body: { employee_no, purpose: "login" }
- *   response: { ok, request_id, expires_in_sec, masked_phone }
- *   (실발송은 행내 SMS 게이트웨이. POC는 demo_code를 응답에 포함)
+ * 계정 검증은 verifyPassword(서버) 이후 호출.
  */
 export function requestSmsOtp(employeeNo) {
   const normalizedNo = String(employeeNo ?? '').trim()
   if (!/^\d{8}$/.test(normalizedNo)) {
     return { ok: false, reason: '사번은 8자리 숫자로 입력해 주세요.' }
-  }
-  const user = listUsers().find(u => u.employeeNo === normalizedNo)
-  if (!user || user.active === false) {
-    return { ok: false, reason: '사용자를 찾을 수 없거나 비활성 상태입니다.' }
   }
   const code = generateOtp()
   const requestId = `sms-${Date.now()}`
@@ -217,7 +170,6 @@ export function requestSmsOtp(employeeNo) {
   appendAuthAudit({
     eventType: 'SMS_OTP_SENT',
     employeeNo: normalizedNo,
-    userId: user.id,
     result: 'SUCCESS',
     reason: requestId,
   })
@@ -226,7 +178,6 @@ export function requestSmsOtp(employeeNo) {
     requestId,
     expiresInSec: Math.floor(SMS_OTP_TTL_MS / 1000),
     maskedPhone: `010-****-${normalizedNo.slice(-4)}`,
-    // POC 전용: 실SMS 미연동 시 화면에 표시
     demoCode: code,
     api: {
       send: 'POST /api/auth/sms/send',
@@ -235,13 +186,6 @@ export function requestSmsOtp(employeeNo) {
   }
 }
 
-/**
- * SMS OTP 검증.
- * 운영 API 설계:
- *   POST /api/auth/sms/verify
- *   body: { employee_no, request_id, code }
- *   response: { ok } | { ok:false, reason }
- */
 export function verifySmsOtp(employeeNo, code) {
   const normalizedNo = String(employeeNo ?? '').trim()
   const otp = String(code ?? '').trim()
@@ -319,7 +263,7 @@ export function appendAuthAudit(event) {
 
 export function sanitizeUser(user) {
   if (!user) return null
-  const { passwordHash, ...safe } = user
+  const { passwordHash, password_hash, ...safe } = user
   return safe
 }
 

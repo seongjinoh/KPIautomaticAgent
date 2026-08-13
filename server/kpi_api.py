@@ -964,6 +964,9 @@ class Handler(BaseHTTPRequestHandler):
                         "/api/eval-configs/export?year=&month=",
                         "/api/eval-configs/seed-defaults",
                         "/api/eval-configs/import?year=&month=",
+                        "/api/auth/login",
+                        "/api/auth/users",
+                        "/api/auth/users/import",
                         "/api/auth/sms/send",
                         "/api/auth/sms/verify",
                         "/api/facts/refresh?year=&month=",
@@ -989,6 +992,11 @@ class Handler(BaseHTTPRequestHandler):
                         "/api/bank-export/{id}/items",
                     ],
                 })
+                return
+            if path == "/api/auth/users":
+                from auth_users import list_users
+                with get_connection() as conn:
+                    self.send_json({"items": list_users(conn)})
                 return
             if path == "/api/codes/lv1":
                 with get_connection() as conn:
@@ -1377,13 +1385,54 @@ class Handler(BaseHTTPRequestHandler):
                 total = sum(v for v in deleted.values() if v > 0)
                 self.send_json({"ok": True, "total_rows": total, "fixtures_cleared": fixture_n, "tables": deleted})
                 return
+            if path == "/api/auth/login":
+                from auth_users import verify_login
+                body = self.read_json() or {}
+                emp = str(body.get("employee_no") or body.get("employeeNo") or "").strip()
+                password = str(body.get("password") or "")
+                with get_connection() as conn:
+                    result = verify_login(conn, emp, password)
+                    conn.commit()
+                status = 200 if result.get("ok") else 401
+                self.send_json(result, status)
+                return
+            if path == "/api/auth/users":
+                from auth_users import upsert_user
+                body = self.read_json() or {}
+                try:
+                    with get_connection() as conn:
+                        user = upsert_user(conn, body)
+                        conn.commit()
+                    self.send_json({"ok": True, "user": user})
+                except ValueError as e:
+                    self.send_json({"error": "validation", "message": str(e)}, 400)
+                return
+            if path == "/api/auth/users/import":
+                from auth_users import import_users
+                body = self.read_json() or {}
+                users = body.get("users") or body.get("items") or []
+                try:
+                    with get_connection() as conn:
+                        result = import_users(conn, users)
+                        conn.commit()
+                    self.send_json(result)
+                except ValueError as e:
+                    self.send_json({"error": "validation", "message": str(e)}, 400)
+                return
             if path == "/api/auth/sms/send":
                 # 운영: 행내 SMS 게이트웨이 연동. POC는 demo_code 반환.
+                # 계정 존재는 /api/auth/login 1단계에서 검증한 뒤 호출한다.
                 body = self.read_json() or {}
                 emp = str(body.get("employee_no") or body.get("employeeNo") or "").strip()
                 if not re.fullmatch(r"\d{8}", emp):
                     self.send_json({"error": "validation", "message": "employee_no(8 digits) required"}, 400)
                     return
+                from auth_users import get_user_by_employee_no
+                with get_connection() as conn:
+                    row = get_user_by_employee_no(conn, emp)
+                    if row is None or str(row["is_active"] or "Y").upper() == "N":
+                        self.send_json({"ok": False, "error": "user", "message": "사용자를 찾을 수 없거나 비활성 상태입니다."}, 404)
+                        return
                 import random
                 code = f"{random.randint(100000, 999999)}"
                 request_id = f"sms-{int(time.time() * 1000)}"

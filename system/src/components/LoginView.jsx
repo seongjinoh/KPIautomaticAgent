@@ -48,7 +48,7 @@ export default function LoginView({ onLogin }) {
     }
     setBusy(true)
     try {
-      const verified = verifyPassword(employeeNo, password)
+      const verified = await verifyPassword(employeeNo, password)
       if (!verified.ok) {
         setError(verified.reason)
         return
@@ -74,7 +74,7 @@ export default function LoginView({ onLogin }) {
     }
     setBusy(true)
     try {
-      const verified = verifyPassword(employeeNo, password)
+      const verified = await verifyPassword(employeeNo, password)
       if (!verified.ok) {
         setError(verified.reason)
         return
@@ -94,26 +94,31 @@ export default function LoginView({ onLogin }) {
     }
   }
 
-  const runSmsVerify = (e) => {
+  const runSmsVerify = async (e) => {
     e?.preventDefault?.()
     setError('')
     if (otp.trim().length !== 6) {
       setError('인증번호 6자리를 입력해 주세요.')
       return
     }
-    const verified = verifyPassword(employeeNo, password)
-    if (!verified.ok) {
-      setError(verified.reason)
-      setSmsStep(false)
-      return
+    setBusy(true)
+    try {
+      const verified = await verifyPassword(employeeNo, password)
+      if (!verified.ok) {
+        setError(verified.reason)
+        setSmsStep(false)
+        return
+      }
+      const otpResult = verifySmsOtp(employeeNo, otp)
+      if (!otpResult.ok) {
+        setError(otpResult.reason)
+        return
+      }
+      const session = establishSession(verified.user, { mfaMethod: 'sms_otp' })
+      onLogin?.(session.user)
+    } finally {
+      setBusy(false)
     }
-    const otpResult = verifySmsOtp(employeeNo, otp)
-    if (!otpResult.ok) {
-      setError(otpResult.reason)
-      return
-    }
-    const session = establishSession(verified.user, { mfaMethod: 'sms_otp' })
-    onLogin?.(session.user)
   }
 
   return (
