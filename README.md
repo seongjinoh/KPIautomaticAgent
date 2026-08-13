@@ -139,34 +139,29 @@ git push -u origin main
 
 `<YOUR_USERNAME>`, `<REPO_NAME>`을 본인 계정/저장소 이름으로 바꿉니다.
 
-## Vercel 배포 (외부 공개 URL)
+## Vercel + Railway 배포 (외부 공개 URL)
 
-프론트는 **Vercel**, API(Python/SQLite)는 **Render**에 올립니다. Vercel만으로는 실적·코드북 API가 동작하지 않습니다.
+프론트는 **Vercel**, API(Python + 영속 SQLite)는 **Railway**에 올립니다.  
+상세: [`RAILWAY.md`](RAILWAY.md)
 
-### 1) API — Render
+### 1) API — Railway
 
-1. [render.com](https://render.com) 로그인 → **New** → **Blueprint**
-2. GitHub 저장소 `KPIautomaticAgent` 연결 → 루트 `render.yaml` 적용
-3. 배포 후 URL 확인 (예: `https://kpi-api.onrender.com`)
-4. `GET /api/health` 로 확인  
-   - Free 플랜은 첫 요청 시 콜드스타트(수십 초)가 있을 수 있음  
-   - 데모 DB는 `server/data/kpi.demo.sqlite.gz`에서 자동 복원
+1. [railway.app](https://railway.app) → GitHub 저장소 연결
+2. **Root Directory**: `server`
+3. Variables: `HOST=0.0.0.0`, `KPI_DATA_DIR=/data`
+4. **Volume** mount path `/data` (SQLite 영속화 — 필수)
+5. **Generate Domain** 후 `GET /api/health` 확인
 
 ### 2) 프론트 — Vercel
 
-1. [vercel.com](https://vercel.com) 로그인 → **Add New Project**
-2. GitHub 저장소 **Import**
-3. 설정 (루트 `vercel.json`이 있으면 대부분 자동 적용):
-   - **Root Directory**: 저장소 루트 그대로 (비워 두거나 `.`)
-   - **Framework Preset**: Vite
-   - **Build Command**: `npm run build --prefix system`
-   - **Output Directory**: `system/dist`
-4. **Environment Variables**
-   - `VITE_API_BASE` = Render API URL (끝 `/` 없이)
-5. **Deploy** → `https://<project>.vercel.app`
+1. [vercel.com](https://vercel.com) → 저장소 Import
+2. 루트 `vercel.json` 자동 적용 (Build: `npm run build --prefix system`, Output: `system/dist`)
+3. **Environment Variables**
+   - `VITE_API_BASE` = Railway API URL (끝 `/` 없이, 예: `https://xxx.up.railway.app`)
+4. **Deploy** → Redeploy 필수 (`VITE_` 값은 빌드 시 고정)
 
 ### 참고
 
-- LLM 리포트는 브라우저 localStorage API 키를 사용합니다. 서버에 키를 넣지 마세요.
-- 재배포: `main` push 시 Vercel/Render가 다시 빌드합니다.
+- LLM 키는 Vercel env 또는 브라우저 설정. 서버에 넣지 마세요.
+- (구) Render Free는 디스크가 휘발되어 DB가 날아갈 수 있음 → Railway Volume 권장
 - 테스트 로그인(로컬과 동일): 관리자 `00000001` / `admin123!`

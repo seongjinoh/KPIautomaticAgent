@@ -7,7 +7,10 @@ import sqlite3
 from pathlib import Path
 
 SERVER_DIR = Path(__file__).resolve().parent
-DATA_DIR = SERVER_DIR / "data"
+# 이미지에 번들된 데모 gz 등 (읽기 전용으로 둘 수 있음)
+BUNDLE_DATA_DIR = SERVER_DIR / "data"
+# Railway Volume 등: KPI_DATA_DIR=/data 로 영속 SQLite
+DATA_DIR = Path(os.environ.get("KPI_DATA_DIR") or BUNDLE_DATA_DIR)
 DB_PATH = DATA_DIR / "kpi.sqlite"
 SCHEMA_PATH = SERVER_DIR / "schema_kpi.sql"
 

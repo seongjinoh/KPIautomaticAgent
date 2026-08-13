@@ -15,7 +15,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from achievement_engine import build_monthly_targets_map, _parse_custom_monthly
-from db import DATA_DIR, DB_PATH, compose_indicator_code, counts, get_connection, init_schema
+from db import BUNDLE_DATA_DIR, DATA_DIR, DB_PATH, compose_indicator_code, counts, get_connection, init_schema
 from import_eval_plan import TEMPLATE_PATH, export_eval_items, parse_eval_workbook, write_template
 from import_code_master import DEFAULT_XLSX, export_workbook, import_workbook
 from org_group import EVAL_ORG_LEVELS, normalize_org_level, validate_org_group_fields
@@ -73,10 +73,15 @@ from indicator_definition import (
     pick_master_definition_fields,
 )
 
-# 클라우드(Render 등)는 PORT/HOST 환경변수 사용. 로컬 기본은 127.0.0.1:8787
+# 클라우드(Render/Railway 등)는 PORT/HOST 환경변수 사용. 로컬 기본은 127.0.0.1:8787
 HOST = os.environ.get("HOST", "127.0.0.1")
 PORT = int(os.environ.get("PORT", "8787"))
-DEMO_DB_GZ = DATA_DIR / "kpi.demo.sqlite.gz"
+# 데모 gz는 이미지 번들(server/data)에서 읽고, 실제 DB는 KPI_DATA_DIR(Volume)에 둠
+_demo_candidates = (
+    BUNDLE_DATA_DIR / "kpi.demo.sqlite.gz",
+    DATA_DIR / "kpi.demo.sqlite.gz",
+)
+DEMO_DB_GZ = next((p for p in _demo_candidates if p.exists()), _demo_candidates[0])
 
 
 def ensure_demo_database() -> None:
@@ -1981,6 +1986,7 @@ def main():
 
     httpd = ThreadingHTTPServer((HOST, PORT), Handler)
     print("KPI API  http://%s:%s/  (code master + eval plan set history)" % (HOST, PORT))
+    print("DB:", DB_PATH, "| DATA_DIR:", DATA_DIR)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

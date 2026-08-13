@@ -14,10 +14,10 @@ import sqlite3
 import sys
 from pathlib import Path
 
+from db import BUNDLE_DATA_DIR, DATA_DIR, DB_PATH
+
 SERVER_DIR = Path(__file__).resolve().parent
-DATA_DIR = SERVER_DIR / "data"
-DB_PATH = DATA_DIR / "kpi.sqlite"
-DEMO_GZ = DATA_DIR / "kpi.demo.sqlite.gz"
+DEMO_GZ = BUNDLE_DATA_DIR / "kpi.demo.sqlite.gz"
 FIXTURES_DIR = SERVER_DIR / "fixtures"
 MARKER_KEY = "runtime_data_wiped_v1"
 

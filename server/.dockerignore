@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+backups/
+# 런타임 DB는 Volume에만 — 이미지에 로컬 sqlite 넣지 않음
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+data/*.sqlite
+data/*.sqlite-wal
+data/*.sqlite-shm
+# 큰 백업/시드 엑셀은 이미지에서 제외 (템플릿 xlsx는 COPY 됨)
+data/*.xlsx
